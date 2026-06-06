@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    image: ghcr.io/platypod/mediarvester:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./downloads:/app/downloads
+      - ./src:/app/src
+    environment:
+      YT_DLP_COOKIES_PATH:
+      YT_DLP_USERNAME: username
+      YT_DLP_PASSWORD: password
