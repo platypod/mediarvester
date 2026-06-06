@@ -9,9 +9,11 @@ const downloads = useDownloadsStore()
 const settings = useSettingsStore()
 
 const nav = [
-  { label: 'Library', path: '/', icon: '▤' },
-  { label: 'Queue', path: '/queue', icon: '↓' },
-  { label: 'Sources', path: '/sources', icon: '★' },
+  { label: 'Library',  path: '/',        icon: '▤' },
+  { label: 'Queue',    path: '/queue',   icon: '↓' },
+  { label: 'Sources',  path: '/sources', icon: '★' },
+  { label: 'Phone',    path: '/pwa',     icon: '⬆' },
+  { label: 'Cookies',  path: '/cookies', icon: '🍪' },
 ]
 
 const activeCount = computed(() => downloads.active.length)
@@ -48,20 +50,12 @@ onMounted(() => settings.fetchMe())
         </router-link>
       </nav>
 
-      <!-- User + Settings at the bottom -->
-      <div class="border-t border-gray-800">
-        <router-link
-          to="/settings"
-          class="flex items-center gap-3 px-3 py-3 text-sm transition-colors mx-2 my-1 rounded-md"
-          :class="route.path === '/settings'
-            ? 'bg-gray-800 text-white'
-            : 'text-gray-400 hover:text-gray-100 hover:bg-gray-800/50'"
-        >
-          <div class="w-5 h-5 rounded-full bg-gray-700 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
-            {{ settings.user[0]?.toUpperCase() }}
-          </div>
-          <span class="truncate">{{ settings.user }}</span>
-        </router-link>
+      <!-- Identity chip at the bottom -->
+      <div class="border-t border-gray-800 px-3 py-3 flex items-center gap-2">
+        <div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
+          {{ settings.user[0]?.toUpperCase() }}
+        </div>
+        <span class="text-xs text-gray-500 truncate">{{ settings.user }}</span>
       </div>
     </aside>
 
