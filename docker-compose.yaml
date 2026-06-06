@@ -5,9 +5,16 @@ services:
     ports:
       - "8080:8080"
     volumes:
+      - ./data:/app/data
       - ./downloads:/app/downloads
-      - ./src:/app/src
+      - ./cookies:/app/cookies
     environment:
-      YT_DLP_COOKIES_PATH:
-      YT_DLP_USERNAME: username
-      YT_DLP_PASSWORD: password
+      DATABASE_URL: sqlite+aiosqlite:////app/data/mediarvester.db
+      MEDIA_ROOT: /app/downloads
+      COOKIES_ROOT: /app/cookies
+      AUTH_HEADER: Remote-User
+      DEFAULT_USER: anonymous
+      DOWNLOAD_CONCURRENCY: "2"
+      YT_DLP_USERNAME:
+      YT_DLP_PASSWORD:
+      LOG_LEVEL: INFO

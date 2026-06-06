@@ -1,7 +1,54 @@
-def main():
-    pass
+import asyncio
+import os
+from contextlib import asynccontextmanager
+from logging import basicConfig, getLogger
+from os import environ
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+
+from api.downloads import router as downloads_router
+from api.media import router as media_router
+from api.settings import router as settings_router
+from api.sources import router as sources_router
+from db import create_all
+from services.downloader import COOKIES_ROOT, MEDIA_ROOT, downloader
+from services.poller import init_scheduler, scheduler
+
+basicConfig(
+    level=environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(name)-24s %(levelname)-8s %(message)s",
+)
+logger = getLogger(__name__)
 
 
-if __name__ == '__main__':
-    main()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    os.makedirs(MEDIA_ROOT, exist_ok=True)
+    os.makedirs(COOKIES_ROOT, exist_ok=True)
+    os.makedirs("data", exist_ok=True)
+    await create_all()
+    downloader.set_loop(asyncio.get_event_loop())
+    await init_scheduler()
+    logger.info("mediarvester started")
+    yield
+    scheduler.shutdown(wait=False)
+    downloader._executor.shutdown(wait=False)
+    logger.info("mediarvester stopped")
 
+
+app = FastAPI(title="mediarvester", lifespan=lifespan)
+
+app.include_router(downloads_router)
+app.include_router(sources_router)
+app.include_router(media_router)
+app.include_router(settings_router)
+
+# Serve downloaded files so thumbnails are reachable from the UI
+app.mount("/media-files", StaticFiles(directory=MEDIA_ROOT, check_dir=False), name="media-files")
+
+# Serve the built Vue app in production
+dist = Path(__file__).parent.parent / "frontend" / "dist"
+if dist.exists():
+    app.mount("/", StaticFiles(directory=str(dist), html=True), name="static")

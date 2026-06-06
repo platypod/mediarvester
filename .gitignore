@@ -1,1 +1,9 @@
 cookies.txt
+data/
+downloads/
+frontend/node_modules/
+frontend/dist/
+frontend/vite.config.js
+frontend/src/**/*.js
+__pycache__/
+*.pyc

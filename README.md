@@ -89,6 +89,13 @@ make build VERSION=1.0.0    # tag a specific version
 The `build` target automatically creates a `platypod-multiarch` buildx builder
 (using the `docker-container` driver) on first run.
 
+> **First publish only — make the package public.** GitHub creates new GHCR
+> packages as **private**. After the very first push, set it public once:
+> `github.com/orgs/platypod/packages` → `mediarvester` → *Package settings* →
+> *Danger Zone* → *Change visibility* → **Public**. This persists across all
+> future versions — subsequent pushes stay public. There is no REST API for
+> changing package visibility (GitHub limitation), so it's a one-time manual step.
+
 ### Run locally
 
 ```sh
