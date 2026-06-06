@@ -5,7 +5,8 @@ from logging import basicConfig, getLogger
 from os import environ
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.downloads import router as downloads_router
@@ -48,7 +49,21 @@ app.include_router(settings_router)
 # Serve downloaded files so thumbnails are reachable from the UI
 app.mount("/media-files", StaticFiles(directory=MEDIA_ROOT, check_dir=False), name="media-files")
 
-# Serve the built Vue app in production
+# Serve the built Vue app in production.
+# Static assets (js/css/icons) are served directly; everything else falls through
+# to index.html so Vue Router handles client-side navigation (including /share).
 dist = Path(__file__).parent.parent / "frontend" / "dist"
 if dist.exists():
-    app.mount("/", StaticFiles(directory=str(dist), html=True), name="static")
+    app.mount("/assets", StaticFiles(directory=str(dist / "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        # Serve known static files from dist root (sw.js, manifest, icon, etc.)
+        candidate = dist / full_path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        # Everything else → SPA shell
+        index = dist / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+        raise HTTPException(status_code=404)
