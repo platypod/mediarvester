@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from api.downloads import router as downloads_router
 from api.media import router as media_router
 from api.settings import router as settings_router
+from api.shortcuts import router as shortcuts_router
 from api.sources import router as sources_router
 from db import create_all
 from services.downloader import COOKIES_ROOT, MEDIA_ROOT, downloader
@@ -45,6 +46,7 @@ app.include_router(downloads_router)
 app.include_router(sources_router)
 app.include_router(media_router)
 app.include_router(settings_router)
+app.include_router(shortcuts_router)
 
 # Serve downloaded files so thumbnails are reachable from the UI
 app.mount("/media-files", StaticFiles(directory=MEDIA_ROOT, check_dir=False), name="media-files")
