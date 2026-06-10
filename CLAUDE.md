@@ -219,7 +219,9 @@ def get_current_user(request: Request) -> str:
 - Run each download in a `ThreadPoolExecutor` (max workers = `DOWNLOAD_CONCURRENCY`, default 2).
 - `enqueue(download_id, url, owner)` — owner is used to resolve the cookies file.
 - Cookies resolution order: `{COOKIES_ROOT}/{owner}.txt` → `YT_DLP_COOKIES_PATH` → no cookies.
-- Output template: `{MEDIA_ROOT}/{platform}/{uploader}/{title}.%(ext)s`.
+- Output template: `{MEDIA_ROOT}/{uploader}/{playlist}/{title}.ext` — platform-agnostic.
+  `uploader` falls back through `channel` → `creator` → `Unsorted`. `playlist` is omitted
+  (empty component, normalised away by pathlib) when the content is not part of a playlist.
 - On finish, read yt-dlp's `.info.json` sidecar and upsert a `MediaItem` row (with `owner`).
 
 ### Cookies upload (`api/settings.py`)

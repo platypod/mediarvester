@@ -51,7 +51,18 @@ class Downloader:
 
     def _build_opts(self, download_id: int, owner: str) -> dict:
         opts: dict = {
-            "outtmpl": f"{MEDIA_ROOT}/%(extractor)s/%(uploader|Unknown)s/%(title)s.%(ext)s",
+            # Platform-agnostic tree: creator / [playlist /] title
+            # %(uploader,channel,creator|Unsorted)s  — first non-empty of those three fields
+            # %(playlist_title,playlist|)s           — playlist name, or empty string
+            # When playlist is absent the empty component produces a double slash,
+            # which POSIX normalises to a single slash.  _on_success also runs the
+            # resolved filepath through pathlib.Path to strip any residual //.
+            "outtmpl": (
+                f"{MEDIA_ROOT}"
+                "/%(uploader,channel,creator|Unsorted)s"
+                "/%(playlist_title,playlist|)s"
+                "/%(title)s.%(ext)s"
+            ),
             "writeinfojson": True,
             "writethumbnail": True,
             "progress_hooks": [lambda d: self._progress_hook(d, download_id)],
@@ -102,6 +113,10 @@ class Downloader:
 
             requested = info.get("requested_downloads") or [{}]
             abs_path = requested[0].get("filepath", "")
+            # Normalise away double slashes that arise when optional template
+            # components (e.g. playlist) are absent and evaluate to "".
+            if abs_path:
+                abs_path = str(Path(abs_path))
             local_path = os.path.relpath(abs_path, MEDIA_ROOT) if abs_path else ""
 
             thumbnail_path: str | None = None

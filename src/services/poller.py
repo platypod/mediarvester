@@ -20,7 +20,8 @@ async def poll_source(source_id: int) -> None:
         if not source or not source.enabled:
             return
 
-        logger.info("polling source %d: %s", source_id, source.url)
+        is_first_poll = source.last_polled_at is None
+        logger.info("polling source %d (%s): %s", source_id, "first" if is_first_poll else "update", source.url)
 
         try:
             loop = asyncio.get_event_loop()
@@ -38,23 +39,31 @@ async def poll_source(source_id: int) -> None:
         entries = info.get("entries") if info else None
         urls = _collect_urls(info, entries)
 
-        for url in urls:
-            already_dl = (
-                await session.execute(select(Download).where(Download.url == url).limit(1))
-            ).scalar_one_or_none()
-            if already_dl:
-                continue
-            already_media = (
-                await session.execute(select(MediaItem).where(MediaItem.source_url == url).limit(1))
-            ).scalar_one_or_none()
-            if already_media:
-                continue
+        if is_first_poll:
+            # First poll: record all existing URLs as already known so we only
+            # download content that appears *after* the user started following.
+            logger.info(
+                "source %d: first poll found %d existing items — marking as seen, not downloading",
+                source_id, len(urls),
+            )
+        else:
+            for url in urls:
+                already_dl = (
+                    await session.execute(select(Download).where(Download.url == url).limit(1))
+                ).scalar_one_or_none()
+                if already_dl:
+                    continue
+                already_media = (
+                    await session.execute(select(MediaItem).where(MediaItem.source_url == url).limit(1))
+                ).scalar_one_or_none()
+                if already_media:
+                    continue
 
-            dl = Download(url=url, source_id=source_id)
-            session.add(dl)
-            await session.flush()
-            downloader.enqueue(dl.id, url)
-            logger.info("enqueued download %d for %s", dl.id, url)
+                dl = Download(url=url, source_id=source_id, owner=source.owner)
+                session.add(dl)
+                await session.flush()
+                downloader.enqueue(dl.id, url, source.owner)
+                logger.info("enqueued download %d for %s", dl.id, url)
 
         source.last_polled_at = datetime.utcnow()
         await session.commit()
@@ -76,17 +85,23 @@ def _collect_urls(info: dict, entries) -> list[str]:
     return [url] if url else []
 
 
-def schedule_source(source: Source) -> None:
+def schedule_source(source: Source, run_now: bool = False) -> None:
+    from datetime import timezone
     job_id = f"source_{source.id}"
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
     if source.enabled:
+        kwargs = {}
+        if run_now:
+            # Fire immediately, then on the regular interval
+            kwargs["next_run_time"] = datetime.now(timezone.utc)
         scheduler.add_job(
             poll_source,
             "interval",
             minutes=source.poll_interval_minutes,
             args=[source.id],
             id=job_id,
+            **kwargs,
         )
 
 
@@ -94,6 +109,7 @@ async def init_scheduler() -> None:
     async with async_session() as session:
         result = await session.execute(select(Source).where(Source.enabled == True))
         for source in result.scalars().all():
-            schedule_source(source)
+            # Don't run_now on startup — sources already have last_polled_at set
+            schedule_source(source, run_now=False)
     scheduler.start()
     logger.info("scheduler started")

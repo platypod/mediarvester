@@ -54,7 +54,7 @@ async def create_source(
     session.add(source)
     await session.commit()
     await session.refresh(source)
-    schedule_source(source)
+    schedule_source(source, run_now=True)
     return source
 
 
