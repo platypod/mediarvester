@@ -49,15 +49,56 @@ Every query filters by `owner`, so users only see their own data.
 
 ## Cookies
 
-Each user can upload a Netscape-format cookies file via the Settings page. Cookies are stored
+Each user can upload a Netscape-format cookies file via the Cookies page. Cookies are stored
 at `{COOKIES_ROOT}/{user}.txt` and used automatically by yt-dlp for that user's downloads.
 
 - `COOKIES_ROOT` is an env var (default: `/app/cookies`) — mount it as a volume in Kubernetes
   so cookies survive pod crashes.
 - A global fallback `YT_DLP_COOKIES_PATH` is still supported for single-user / legacy setups;
   per-user cookies take priority when present.
-- The Settings page shows when cookies were last uploaded and provides a drag-and-drop zone
+- The Cookies page shows when cookies were last uploaded and provides a drag-and-drop zone
   to refresh them.
+
+---
+
+## Mobile sharing
+
+### Android
+The app ships a PWA manifest with a `share_target` entry. Installing mediarvester via Chrome's
+"Add to Home screen" registers it in the Android OS Share sheet. Tapping Share → mediarvester
+in any app POSTs the URL directly to `/share` (handled by `SharePage.vue`).
+
+### iOS
+
+#### What was tried and why it failed
+
+**PWA Web Share Target** (`share_target` in the web app manifest): works on Android/Chrome
+but Apple has never implemented the Web Share Target API in Safari. PWAs installed to the
+iOS home screen simply do not appear in the iOS Share sheet regardless of the manifest.
+
+**Serving a `.shortcut` binary plist** from `GET /api/shortcuts/mediarvester.shortcut`:
+the backend generated a valid `WFSharingExtensionWorkflow` plist that opened
+`{host}/share?url=<ExtensionInput>` in Safari. Structurally correct, but iOS rejects it
+at install time with *"Importing unsigned shortcut files is not supported"*. Apple removed
+support for importing arbitrary `.shortcut` files from third-party URLs in iOS 15+; the
+only accepted distribution channels are the Shortcuts Gallery and iCloud sharing links
+(`icloud.com/shortcuts/…`). Generating an iCloud link requires creating the shortcut on a
+real device and sharing it through Apple's infrastructure — not possible from a server.
+
+#### What works
+
+A manually created **iOS Shortcut**. The shortcut is trivial (one URL action + Open URLs)
+so the `/pwa` page walks the user through creating it themselves:
+
+- Displays the share URL (`{origin}/share?url=`) for copy-pasting into the action.
+- After enabling "Show in Share Sheet" in the shortcut's details, it appears in the iOS
+  Share sheet of any app.
+- Tapping it opens `{origin}/share?url=<shared-url>` in Safari.
+- If the Authelia session is active the download is queued silently; if expired, Authelia
+  shows the login page and redirects back to the original URL after login, so the download
+  still goes through.
+- Checking **Remember me** at login keeps the session alive for 30 days (configured in
+  Authelia via `remember_me: 30d`), making the login prompt rare in practice.
 
 ---
 
@@ -99,10 +140,12 @@ frontend/                     # Vue 3 + TypeScript + Vite
       media.ts                # Pinia: media library
       settings.ts             # Pinia: current user + cookies status
     pages/
-      QueuePage.vue           # /queue  — live download queue with progress bars
-      LibraryPage.vue         # /       — responsive card grid of MediaItems
-      SourcesPage.vue         # /sources — manage followed creators/playlists
-      SettingsPage.vue        # /settings — cookies upload, current user info
+      QueuePage.vue           # /queue    — live download queue with progress bars
+      LibraryPage.vue         # /         — responsive card grid of MediaItems
+      SourcesPage.vue         # /sources  — manage followed creators/playlists
+      PwaPage.vue             # /pwa      — mobile share instructions + iOS Shortcut download
+      CookiesPage.vue         # /cookies  — cookies upload, status
+      SharePage.vue           # /share    — handles incoming share-sheet URLs (PWA + iOS Shortcut)
     components/
       DownloadCard.vue
       MediaCard.vue
@@ -225,3 +268,6 @@ In production, FastAPI serves the built `frontend/dist/` as static files under `
 - Built-in auth / login UI (handled entirely by Traefik + Authelia).
 - Transcoding / re-encoding (yt-dlp post-processors handle remuxing if needed).
 - A separate message broker (APScheduler embedded is sufficient).
+- iOS Shortcut distributed as a downloadable file — Apple no longer allows importing
+  `.shortcut` files from third-party servers. Users create the shortcut manually (guided
+  by the `/pwa` page).

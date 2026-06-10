@@ -23,8 +23,9 @@ onMounted(() => settings.fetchMe())
 
 <template>
   <div class="flex h-full text-gray-100">
-    <!-- Sidebar -->
-    <aside class="w-48 flex-shrink-0 bg-gray-950 flex flex-col border-r border-gray-800">
+
+    <!-- ── Sidebar (md+) ──────────────────────────────────────────────── -->
+    <aside class="hidden md:flex w-48 flex-shrink-0 bg-gray-950 flex-col border-r border-gray-800">
       <div class="px-4 py-5 border-b border-gray-800">
         <span class="font-bold text-white tracking-wide text-sm">mediarvester</span>
       </div>
@@ -50,7 +51,7 @@ onMounted(() => settings.fetchMe())
         </router-link>
       </nav>
 
-      <!-- Identity chip at the bottom -->
+      <!-- Identity chip -->
       <div class="border-t border-gray-800 px-3 py-3 flex items-center gap-2">
         <div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
           {{ settings.user[0]?.toUpperCase() }}
@@ -59,9 +60,33 @@ onMounted(() => settings.fetchMe())
       </div>
     </aside>
 
-    <!-- Main content -->
-    <main class="flex-1 overflow-y-auto bg-gray-900">
+    <!-- ── Main content ───────────────────────────────────────────────── -->
+    <main class="flex-1 overflow-y-auto bg-gray-900 pb-16 md:pb-0">
       <router-view />
     </main>
+
+    <!-- ── Bottom nav (mobile only) ──────────────────────────────────── -->
+    <nav class="md:hidden fixed bottom-0 inset-x-0 bg-gray-950 border-t border-gray-800 flex z-50">
+      <router-link
+        v-for="item in nav"
+        :key="item.path"
+        :to="item.path"
+        class="flex-1 flex flex-col items-center justify-center py-2 gap-0.5 text-xs transition-colors relative"
+        :class="route.path === item.path
+          ? 'text-white'
+          : 'text-gray-500 hover:text-gray-300'"
+      >
+        <span class="text-lg leading-none">{{ item.icon }}</span>
+        <span class="leading-none">{{ item.label }}</span>
+        <!-- Active indicator -->
+        <span
+          v-if="item.path === '/queue' && activeCount > 0"
+          class="absolute top-1.5 right-1/4 translate-x-2 w-4 h-4 bg-blue-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center"
+        >
+          {{ activeCount }}
+        </span>
+      </router-link>
+    </nav>
+
   </div>
 </template>

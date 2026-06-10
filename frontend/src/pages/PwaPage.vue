@@ -10,6 +10,8 @@ onMounted(() => {
   isAndroid.value = /android/i.test(navigator.userAgent)
   isInstalled.value = window.matchMedia('(display-mode: standalone)').matches
 })
+
+const shareUrl = `${window.location.origin}/share?url=`
 </script>
 
 <template>
@@ -41,47 +43,80 @@ onMounted(() => {
     </section>
 
     <!-- ── iOS ────────────────────────────────────────────────────────────── -->
-    <section v-if="isIos || (!isIos && !isAndroid)" class="bg-gray-800 rounded-lg p-5 space-y-4">
+    <section v-if="isIos || (!isIos && !isAndroid)" class="bg-gray-800 rounded-lg p-5 space-y-5">
       <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider flex items-center gap-2">
         <span>🍎</span> iPhone / iPad — iOS Shortcut
       </h2>
 
-      <!-- Limitation notice -->
-      <div class="bg-yellow-900/30 border border-yellow-700/50 rounded-lg px-4 py-3 text-xs text-yellow-300/80 leading-relaxed">
-        Apple's Share sheet does not support web apps directly. The workaround is a
-        <strong class="text-yellow-200">native iOS Shortcut</strong> that acts as a bridge —
-        it appears in the Share sheet and sends the URL to mediarvester via Safari.
+      <div class="bg-gray-700/50 rounded-lg px-4 py-3 text-sm text-gray-400 leading-relaxed">
+        Apple's Share sheet does not support web apps directly, and iOS no longer allows
+        importing shortcut files from third-party servers. The workaround is to
+        <strong class="text-gray-200">create a shortcut manually</strong> — it takes about
+        a minute and only needs to be done once.
       </div>
 
-      <!-- How it works -->
-      <p class="text-gray-400 text-sm leading-relaxed">
-        Download the Shortcut below, open it in the Shortcuts app, and tap
-        <strong class="text-gray-300">Add Shortcut</strong>. It will then appear
-        in the Share sheet of any app.
-      </p>
+      <!-- URL display -->
+      <div class="space-y-1">
+        <p class="text-xs text-gray-500 uppercase tracking-wider">Your mediarvester share URL</p>
+        <div class="flex items-center gap-2 bg-gray-900 rounded-lg px-3 py-2">
+          <code class="text-xs text-blue-300 break-all flex-1">{{ shareUrl }}</code>
+        </div>
+        <p class="text-xs text-gray-600">You will paste this into the shortcut below.</p>
+      </div>
 
-      <!-- Download button -->
-      <a
-        href="/api/shortcuts/mediarvester.shortcut"
-        class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
-      >
-        <span>↓</span>
-        Download mediarvester Shortcut
-      </a>
+      <!-- Steps -->
+      <div class="space-y-4">
+        <div class="space-y-2">
+          <p class="text-sm font-medium text-gray-300">Create the shortcut</p>
+          <ol class="space-y-3 text-sm text-gray-400 list-decimal list-inside leading-relaxed">
+            <li>Open the <strong class="text-gray-300">Shortcuts</strong> app and tap <strong class="text-gray-300">+</strong> to create a new shortcut.</li>
+            <li>Tap <strong class="text-gray-300">Add Action</strong>, search for <strong class="text-gray-300">Text</strong> and pick the <strong class="text-gray-300">Text</strong> action.</li>
+            <li>
+              In the text field, paste your share URL:<br>
+              <code class="text-xs text-blue-300 break-all">{{ shareUrl }}</code><br>
+              Then, without adding a space, tap the
+              <strong class="text-gray-300">variable button</strong> (looks like
+              <strong class="text-gray-300">{x}</strong> or a small token icon) and choose
+              <strong class="text-gray-300">Shortcut Input</strong>. The field should read
+              <code class="text-xs text-blue-300">…share?url=</code><em class="text-gray-500">[Shortcut Input]</em>.
+            </li>
+            <li>Tap <strong class="text-gray-300">+</strong> to add another action, search for <strong class="text-gray-300">Open URLs</strong> and add it. It will use the Text from the previous step automatically.</li>
+            <li>Tap the shortcut name at the top, rename it to <strong class="text-gray-300">mediarvester</strong>, and tap <strong class="text-gray-300">Done</strong>.</li>
+            <li>
+              Tap the <strong class="text-gray-300">ⓘ</strong> (details) button, enable
+              <strong class="text-gray-300">Show in Share Sheet</strong>, and set
+              <strong class="text-gray-300">Receive</strong> to
+              <strong class="text-gray-300">URLs</strong> and <strong class="text-gray-300">Text</strong>
+              — both are needed because some apps (e.g. Instagram) share as text rather than a plain URL.
+            </li>
+          </ol>
+        </div>
 
-      <!-- Step by step -->
-      <ol class="space-y-2 text-sm text-gray-400 list-decimal list-inside leading-relaxed">
-        <li>Tap the button above — Safari opens the Shortcuts app automatically.</li>
-        <li>Tap <strong class="text-gray-300">Add Shortcut</strong>.</li>
-        <li>Go to YouTube, Instagram, or any other app.</li>
-        <li>Find a video and tap <strong class="text-gray-300">Share → mediarvester</strong>.</li>
-        <li>
-          Safari opens briefly, queues the download, then redirects to the queue.
-          <span class="text-gray-500">(You must be logged in to mediarvester in Safari.)</span>
-        </li>
-      </ol>
+        <div class="space-y-2">
+          <p class="text-sm font-medium text-gray-300">Use it</p>
+          <ol class="space-y-2 text-sm text-gray-400 list-decimal list-inside leading-relaxed">
+            <li>In YouTube, Instagram, or any other app find a video and tap <strong class="text-gray-300">Share</strong>.</li>
+            <li>Choose <strong class="text-gray-300">mediarvester</strong> from the share sheet.</li>
+            <li>Safari opens and the download is queued automatically.</li>
+          </ol>
+        </div>
 
-      <p class="text-xs text-gray-600">Requires iOS 16.4 or later.</p>
+        <!-- Auth note -->
+        <div class="bg-gray-700/50 rounded-lg px-4 py-3 space-y-1.5 text-xs text-gray-400 leading-relaxed">
+          <p class="font-medium text-gray-300">Authentication</p>
+          <p>
+            The shortcut opens mediarvester in Safari. If your session is active, the download
+            is queued silently. If it has expired, Safari shows the login page — log in once
+            and you are redirected back automatically, with the download queued.
+          </p>
+          <p>
+            Check <strong class="text-gray-300">Remember me</strong> when logging in so your
+            session stays active for 30 days and the login prompt rarely appears.
+          </p>
+        </div>
+      </div>
+
+      <p class="text-xs text-gray-600">Requires iOS 13 or later.</p>
     </section>
   </div>
 </template>
