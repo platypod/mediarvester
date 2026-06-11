@@ -51,6 +51,9 @@ class Downloader:
 
     def _build_opts(self, download_id: int, owner: str) -> dict:
         opts: dict = {
+            # Use Node.js for YouTube's n-challenge (requires yt-dlp-ejs + Node 22+).
+            # yt-dlp defaults to deno-only; node must be explicitly enabled.
+            "js_runtimes": {"node": {}},
             # Platform-agnostic tree: creator / [playlist /] title
             # %(uploader,channel,creator|Unsorted)s  — first non-empty of those three fields
             # %(playlist_title,playlist|)s           — playlist name, or empty string
