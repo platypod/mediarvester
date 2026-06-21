@@ -17,12 +17,14 @@ class SourceCreate(BaseModel):
     url: str
     label: str | None = None
     poll_interval_minutes: int = 60
+    include_shorts: bool = False
 
 
 class SourcePatch(BaseModel):
     label: str | None = None
     enabled: bool | None = None
     poll_interval_minutes: int | None = None
+    include_shorts: bool | None = None
 
 
 class SourceRead(BaseModel):
@@ -31,6 +33,7 @@ class SourceRead(BaseModel):
     label: str | None
     platform: str | None
     enabled: bool
+    include_shorts: bool
     poll_interval_minutes: int
     owner: str
     last_polled_at: datetime | None
@@ -49,6 +52,7 @@ async def create_source(
         url=body.url,
         label=body.label,
         poll_interval_minutes=body.poll_interval_minutes,
+        include_shorts=body.include_shorts,
         owner=owner,
     )
     session.add(source)
@@ -85,6 +89,8 @@ async def patch_source(
         source.enabled = body.enabled
     if body.poll_interval_minutes is not None:
         source.poll_interval_minutes = body.poll_interval_minutes
+    if body.include_shorts is not None:
+        source.include_shorts = body.include_shorts
     await session.commit()
     await session.refresh(source)
     schedule_source(source)

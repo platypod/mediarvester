@@ -1,7 +1,8 @@
 from datetime import datetime
 from os import environ
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -42,6 +43,7 @@ class Source(Base):
     label: Mapped[str | None]
     platform: Mapped[str | None]
     enabled: Mapped[bool] = mapped_column(default=True)
+    include_shorts: Mapped[bool] = mapped_column(default=False, server_default="0")
     poll_interval_minutes: Mapped[int] = mapped_column(default=60)
     owner: Mapped[str] = mapped_column(default="anonymous", server_default="anonymous")
     last_polled_at: Mapped[datetime | None]
@@ -71,3 +73,14 @@ async def get_session():
 async def create_all() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # create_all() only creates missing tables; existing deployments need this
+    # new column added in-place since there is no migration tool in this project.
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT include_shorts FROM source LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("ALTER TABLE source ADD COLUMN include_shorts BOOLEAN DEFAULT FALSE")
+            )

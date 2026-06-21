@@ -2,11 +2,15 @@
 import { ref } from 'vue'
 
 defineProps<{ open: boolean }>()
-const emit = defineEmits<{ close: []; submit: [url: string, label: string, interval: number] }>()
+const emit = defineEmits<{
+  close: []
+  submit: [url: string, label: string, interval: number, includeShorts: boolean]
+}>()
 
 const url = ref('')
 const label = ref('')
 const interval = ref(60)
+const includeShorts = ref(false)
 const error = ref('')
 
 function submit() {
@@ -14,10 +18,11 @@ function submit() {
     error.value = 'URL is required.'
     return
   }
-  emit('submit', url.value.trim(), label.value.trim(), interval.value)
+  emit('submit', url.value.trim(), label.value.trim(), interval.value, includeShorts.value)
   url.value = ''
   label.value = ''
   interval.value = 60
+  includeShorts.value = false
   error.value = ''
 }
 </script>
@@ -59,6 +64,14 @@ function submit() {
               class="w-full bg-gray-700 text-gray-100 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
+          <label class="flex items-center gap-2 text-xs text-gray-400 select-none">
+            <input
+              v-model="includeShorts"
+              type="checkbox"
+              class="rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500"
+            />
+            Include YouTube Shorts
+          </label>
           <p v-if="error" class="text-red-400 text-xs">{{ error }}</p>
         </div>
 

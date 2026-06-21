@@ -10,8 +10,8 @@ const polling = ref<Record<number, boolean>>({})
 
 onMounted(() => store.fetchAll())
 
-async function addSource(url: string, label: string, interval: number) {
-  await store.create(url, label || undefined, interval)
+async function addSource(url: string, label: string, interval: number, includeShorts: boolean) {
+  await store.create(url, label || undefined, interval, includeShorts)
   dialogOpen.value = false
 }
 
@@ -49,6 +49,7 @@ async function pollNow(id: number) {
         :polling="polling[s.id]"
         @delete="store.remove(s.id)"
         @toggle="store.patch(s.id, { enabled: !s.enabled })"
+        @toggle-shorts="store.patch(s.id, { include_shorts: !s.include_shorts })"
         @poll="pollNow(s.id)"
       />
     </div>

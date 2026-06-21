@@ -2,7 +2,7 @@
 import type { Source } from '../stores/sources'
 
 const props = defineProps<{ source: Source; polling?: boolean }>()
-defineEmits<{ delete: []; toggle: []; poll: [] }>()
+defineEmits<{ delete: []; toggle: []; 'toggle-shorts': []; poll: [] }>()
 
 function timeAgo(iso: string | null): string {
   if (!iso) return 'never'
@@ -28,6 +28,15 @@ function timeAgo(iso: string | null): string {
       </div>
       <p class="text-gray-100 text-sm font-medium truncate">{{ source.label ?? source.url }}</p>
       <p v-if="source.label" class="text-xs text-gray-500 truncate mt-0.5">{{ source.url }}</p>
+      <label class="flex items-center gap-1.5 mt-1.5 text-xs text-gray-500 select-none">
+        <input
+          :checked="source.include_shorts"
+          type="checkbox"
+          class="rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+          @change="$emit('toggle-shorts')"
+        />
+        Include YouTube Shorts
+      </label>
     </div>
 
     <div class="flex items-center gap-2 flex-shrink-0">

@@ -8,6 +8,7 @@ export interface Source {
   label: string | null
   platform: string | null
   enabled: boolean
+  include_shorts: boolean
   poll_interval_minutes: number
   last_polled_at: string | null
   created_at: string
@@ -20,13 +21,18 @@ export const useSourcesStore = defineStore('sources', () => {
     items.value = await api.get<Source[]>('/api/sources')
   }
 
-  async function create(url: string, label?: string, poll_interval_minutes = 60): Promise<Source> {
-    const s = await api.post<Source>('/api/sources', { url, label, poll_interval_minutes })
+  async function create(
+    url: string,
+    label?: string,
+    poll_interval_minutes = 60,
+    include_shorts = false,
+  ): Promise<Source> {
+    const s = await api.post<Source>('/api/sources', { url, label, poll_interval_minutes, include_shorts })
     items.value.unshift(s)
     return s
   }
 
-  async function patch(id: number, data: Partial<Pick<Source, 'label' | 'enabled' | 'poll_interval_minutes'>>) {
+  async function patch(id: number, data: Partial<Pick<Source, 'label' | 'enabled' | 'poll_interval_minutes' | 'include_shorts'>>) {
     const s = await api.patch<Source>(`/api/sources/${id}`, data)
     const idx = items.value.findIndex(x => x.id === id)
     if (idx >= 0) items.value[idx] = s

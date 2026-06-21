@@ -38,6 +38,8 @@ async def poll_source(source_id: int) -> None:
 
         entries = info.get("entries") if info else None
         urls = _collect_urls(info, entries)
+        if not source.include_shorts:
+            urls = [u for u in urls if not _is_short(u)]
 
         if is_first_poll:
             # First poll: record all existing URLs as already known so we only
@@ -72,6 +74,11 @@ async def poll_source(source_id: int) -> None:
 def _extract_flat(url: str) -> dict:
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
         return ydl.extract_info(url, download=False) or {}
+
+
+def _is_short(url: str) -> bool:
+    """YouTube shorts use a distinct /shorts/ URL path (videos and channel tab alike)."""
+    return "/shorts/" in url or url.rstrip("/").endswith("/shorts")
 
 
 def _collect_urls(info: dict, entries) -> list[str]:
