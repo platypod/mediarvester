@@ -14,7 +14,7 @@ from api.media import router as media_router
 from api.settings import router as settings_router
 from api.sources import router as sources_router
 from db import create_all
-from services.downloader import COOKIES_ROOT, MEDIA_ROOT, downloader
+from services.downloader import COOKIES_ROOT, MEDIA_ROOT, downloader, recover_interrupted
 from services.poller import init_scheduler, scheduler
 
 basicConfig(
@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
     os.makedirs("data", exist_ok=True)
     await create_all()
     downloader.set_loop(asyncio.get_event_loop())
+    await recover_interrupted()
     await init_scheduler()
     logger.info("mediarvester started")
     yield

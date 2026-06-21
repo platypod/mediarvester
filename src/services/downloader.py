@@ -36,11 +36,11 @@ class Downloader:
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
-    def enqueue(self, download_id: int, url: str, owner: str = "anonymous") -> None:
-        self._executor.submit(self._run, download_id, url, owner)
+    def enqueue(self, download_id: int, url: str, owner: str = "anonymous", force: bool = False) -> None:
+        self._executor.submit(self._run, download_id, url, owner, force)
 
-    def _run(self, download_id: int, url: str, owner: str) -> None:
-        opts = self._build_opts(download_id, owner)
+    def _run(self, download_id: int, url: str, owner: str, force: bool = False) -> None:
+        opts = self._build_opts(download_id, owner, force)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -49,7 +49,7 @@ class Downloader:
             logger.error("download %d failed: %s", download_id, exc)
             self._schedule(self._on_error(download_id, str(exc)))
 
-    def _build_opts(self, download_id: int, owner: str) -> dict:
+    def _build_opts(self, download_id: int, owner: str, force: bool = False) -> dict:
         opts: dict = {
             # Use Node.js for YouTube's n-challenge (requires yt-dlp-ejs + Node 22+).
             # yt-dlp defaults to deno-only; node must be explicitly enabled.
@@ -76,6 +76,12 @@ class Downloader:
             "no_warnings": True,
             "noprogress": True,
         }
+        if force:
+            # Recovery after a restart: an interrupted job may have left a partial
+            # `.part` (or a half-written final) file on disk. Don't resume it — its
+            # integrity is unknown — discard and overwrite from scratch instead.
+            opts["continuedl"] = False
+            opts["overwrites"] = True
         if cookies := get_cookies_path(owner):
             opts["cookiefile"] = cookies
         if user := environ.get("YT_DLP_USERNAME"):
@@ -158,3 +164,34 @@ class Downloader:
 
 
 downloader = Downloader()
+
+
+async def recover_interrupted() -> None:
+    """Re-enqueue downloads orphaned by a restart.
+
+    Download workers live in an in-process ThreadPoolExecutor, so a redeploy
+    leaves any `queued`/`downloading` row stuck forever — its thread is gone and
+    nothing will ever move it to `done`/`error`. On startup, reset those rows and
+    re-enqueue them with `force=True` so yt-dlp discards any partial file rather
+    than resuming one of unknown integrity.
+    """
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Download).where(Download.status.in_(("downloading", "queued")))
+        )
+        stuck = result.scalars().all()
+        for dl in stuck:
+            dl.status = "queued"
+            dl.progress = 0.0
+            dl.error = None
+        await session.commit()
+        rows = [(dl.id, dl.url, dl.owner) for dl in stuck]
+
+    for download_id, url, owner in rows:
+        downloader.enqueue(download_id, url, owner, force=True)
+        logger.info("recovered interrupted download %d: %s", download_id, url)
+
+    if rows:
+        logger.info("re-enqueued %d interrupted download(s) after restart", len(rows))
