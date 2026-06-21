@@ -54,6 +54,9 @@ class Downloader:
             # Use Node.js for YouTube's n-challenge (requires yt-dlp-ejs + Node 22+).
             # yt-dlp defaults to deno-only; node must be explicitly enabled.
             "js_runtimes": {"node": {}},
+            # Skip unavailable/age-restricted/private items instead of aborting the whole job.
+            # Critical for playlists that mix public and restricted content.
+            "ignoreerrors": True,
             # Platform-agnostic tree: creator / [playlist /] title
             # %(uploader,channel,creator|Unsorted)s  — first non-empty of those three fields
             # %(playlist_title,playlist|)s           — playlist name, or empty string
