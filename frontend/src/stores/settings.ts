@@ -7,15 +7,28 @@ interface CookiesStatus {
   uploaded_at: string | null
 }
 
+interface VersionInfo {
+  version: string
+  github_url: string
+}
+
 export const useSettingsStore = defineStore('settings', () => {
   const user = ref<string>('anonymous')
   const cookiesStatus = ref<CookiesStatus>({ has_cookies: false, uploaded_at: null })
   const uploading = ref(false)
   const uploadError = ref('')
+  const version = ref<string>('dev')
+  const githubUrl = ref<string>('https://github.com/platypod/mediarvester')
 
   async function fetchMe() {
     const data = await api.get<{ user: string }>('/api/settings/me')
     user.value = data.user
+  }
+
+  async function fetchVersion() {
+    const data = await api.get<VersionInfo>('/api/settings/version')
+    version.value = data.version
+    githubUrl.value = data.github_url
   }
 
   async function fetchCookiesStatus() {
@@ -42,5 +55,5 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  return { user, cookiesStatus, uploading, uploadError, fetchMe, fetchCookiesStatus, uploadCookies }
+  return { user, cookiesStatus, uploading, uploadError, version, githubUrl, fetchMe, fetchCookiesStatus, fetchVersion, uploadCookies }
 })

@@ -30,6 +30,7 @@ RUN mkdir -p /app/data /app/downloads
 
 EXPOSE 8080
 
+ENV VERSION=dev
 ENV MEDIA_ROOT=/app/downloads
 ENV DATABASE_URL=sqlite+aiosqlite:////app/data/mediarvester.db
 ENV YT_DLP_COOKIES_PATH=""

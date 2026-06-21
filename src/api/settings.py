@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from os import environ
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -10,9 +11,21 @@ from services.downloader import COOKIES_ROOT
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
+GITHUB_URL = "https://github.com/platypod/mediarvester"
+
 
 class MeRead(BaseModel):
     user: str
+
+
+class VersionInfo(BaseModel):
+    version: str
+    github_url: str
+
+
+@router.get("/version", response_model=VersionInfo)
+async def get_version():
+    return {"version": environ.get("VERSION", "dev"), "github_url": GITHUB_URL}
 
 
 class CookiesStatus(BaseModel):
