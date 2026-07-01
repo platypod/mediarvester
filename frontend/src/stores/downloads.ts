@@ -26,6 +26,10 @@ export const useDownloadsStore = defineStore('downloads', () => {
 
   async function create(url: string): Promise<Download> {
     const dl = await api.post<Download>('/api/downloads', { url })
+    const idx = items.value.findIndex(d => d.id === dl.id)
+    if (idx >= 0) {
+      items.value.splice(idx, 1)
+    }
     items.value.unshift(dl)
     return dl
   }

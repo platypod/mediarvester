@@ -1,14 +1,14 @@
 import asyncio
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user
-from db import Download, async_session, get_session
+from db import Download, MediaItem, async_session, get_session
 from services.downloader import downloader
 
 router = APIRouter(prefix="/api/downloads", tags=["downloads"])
@@ -37,9 +37,37 @@ class DownloadRead(BaseModel):
 @router.post("", response_model=DownloadRead, status_code=201)
 async def create_download(
     body: DownloadCreate,
+    response: Response,
     owner: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    # Already downloaded, or already in flight — return that instead of
+    # enqueuing a duplicate yt-dlp job and a duplicate MediaItem row.
+    existing = (
+        await session.execute(
+            select(Download)
+            .where(Download.owner == owner)
+            .where(Download.url == body.url)
+            .where(Download.status.in_(("queued", "downloading", "done")))
+            .order_by(Download.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not existing:
+        existing = (
+            await session.execute(
+                select(Download)
+                .join(MediaItem, MediaItem.download_id == Download.id)
+                .where(Download.owner == owner)
+                .where(MediaItem.source_url == body.url)
+                .order_by(Download.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if existing:
+        response.status_code = 200
+        return existing
+
     dl = Download(url=body.url, owner=owner)
     session.add(dl)
     await session.commit()
