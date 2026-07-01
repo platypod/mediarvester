@@ -73,7 +73,39 @@ async def poll_source(source_id: int) -> None:
 
 def _extract_flat(url: str) -> dict:
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
-        return ydl.extract_info(url, download=False) or {}
+        info = ydl.extract_info(url, download=False) or {}
+    return _resolve_channel_tabs(info)
+
+
+_RELEVANT_TAB_SUFFIXES = ("/videos", "/shorts")
+
+
+def _resolve_channel_tabs(info: dict) -> dict:
+    """Flat-extracting a bare channel URL (e.g. .../@handle) returns its tabs
+    (Videos/Shorts/Live) as entries, not individual videos -- each tab is itself
+    a nested playlist. Left unresolved, a tab's URL gets enqueued as if it were
+    one video: downloading it silently expands into a full playlist dump (every
+    video landing under a `Videos/` subfolder instead of the channel root) and,
+    once recorded, permanently blocks re-discovery of any video published after
+    that one-time dump. Descend into the Videos/Shorts tabs so callers always
+    see per-video entries.
+    """
+    entries = info.get("entries")
+    if not entries or not all(e.get("_type") == "playlist" for e in entries):
+        return info
+
+    merged: list[dict] = []
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
+        for tab in entries:
+            tab_url = tab.get("webpage_url") or tab.get("url") or ""
+            if not any(tab_url.rstrip("/").endswith(suffix) for suffix in _RELEVANT_TAB_SUFFIXES):
+                continue
+            tab_info = ydl.extract_info(tab_url, download=False) or {}
+            merged.extend(tab_info.get("entries") or [])
+
+    info = dict(info)
+    info["entries"] = merged
+    return info
 
 
 def _is_short(url: str) -> bool:
