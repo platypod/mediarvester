@@ -1,10 +1,11 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import yt_dlp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
+from yt_dlp.utils import RejectedVideoReached
 
 from db import Download, MediaItem, Source, async_session
 from services.downloader import downloader
@@ -20,108 +21,161 @@ async def poll_source(source_id: int) -> None:
         if not source or not source.enabled:
             return
 
-        is_first_poll = source.last_polled_at is None
-        logger.info("polling source %d (%s): %s", source_id, "first" if is_first_poll else "update", source.url)
+        logger.info("polling source %d: %s", source_id, source.url)
 
+        if not source.label:
+            await _label_source(source)
+
+        cutoff_ts = source.created_at.replace(tzinfo=timezone.utc).timestamp()
         try:
             loop = asyncio.get_event_loop()
-            info = await loop.run_in_executor(None, lambda: _extract_flat(source.url))
+            entries = await loop.run_in_executor(
+                None, lambda: _new_entries_since(source.url, source.include_shorts, cutoff_ts)
+            )
         except Exception as exc:
             logger.error("failed to fetch source %d: %s", source_id, exc)
             source.last_polled_at = datetime.utcnow()
             await session.commit()
             return
 
-        if not source.label and info:
-            source.label = info.get("title") or info.get("uploader")
-            source.platform = info.get("extractor")
+        for entry in entries:
+            url = entry.get("webpage_url") or entry.get("url")
+            if not url:
+                continue
+            already_dl = (
+                await session.execute(select(Download).where(Download.url == url).limit(1))
+            ).scalar_one_or_none()
+            if already_dl:
+                continue
+            already_media = (
+                await session.execute(select(MediaItem).where(MediaItem.source_url == url).limit(1))
+            ).scalar_one_or_none()
+            if already_media:
+                continue
 
-        entries = info.get("entries") if info else None
-        urls = _collect_urls(info, entries)
-        if not source.include_shorts:
-            urls = [u for u in urls if not _is_short(u)]
-
-        if is_first_poll:
-            # First poll: record all existing URLs as already known so we only
-            # download content that appears *after* the user started following.
-            logger.info(
-                "source %d: first poll found %d existing items — marking as seen, not downloading",
-                source_id, len(urls),
-            )
-        else:
-            for url in urls:
-                already_dl = (
-                    await session.execute(select(Download).where(Download.url == url).limit(1))
-                ).scalar_one_or_none()
-                if already_dl:
-                    continue
-                already_media = (
-                    await session.execute(select(MediaItem).where(MediaItem.source_url == url).limit(1))
-                ).scalar_one_or_none()
-                if already_media:
-                    continue
-
-                dl = Download(url=url, source_id=source_id, owner=source.owner)
-                session.add(dl)
-                await session.flush()
-                downloader.enqueue(dl.id, url, source.owner)
-                logger.info("enqueued download %d for %s", dl.id, url)
+            dl = Download(url=url, source_id=source_id, owner=source.owner)
+            session.add(dl)
+            await session.flush()
+            downloader.enqueue(dl.id, url, source.owner)
+            logger.info("enqueued download %d for %s", dl.id, url)
 
         source.last_polled_at = datetime.utcnow()
         await session.commit()
 
 
+async def _label_source(source: Source) -> None:
+    loop = asyncio.get_event_loop()
+    try:
+        info = await loop.run_in_executor(None, lambda: _extract_flat(source.url))
+    except Exception:
+        return
+    if info:
+        source.label = info.get("title") or info.get("uploader")
+        source.platform = info.get("extractor")
+
+
 def _extract_flat(url: str) -> dict:
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
-        info = ydl.extract_info(url, download=False) or {}
-    return _resolve_channel_tabs(info)
+        return ydl.extract_info(url, download=False) or {}
 
 
 _RELEVANT_TAB_SUFFIXES = ("/videos", "/shorts")
 
 
-def _resolve_channel_tabs(info: dict) -> dict:
-    """Flat-extracting a bare channel URL (e.g. .../@handle) returns its tabs
-    (Videos/Shorts/Live) as entries, not individual videos -- each tab is itself
-    a nested playlist. Left unresolved, a tab's URL gets enqueued as if it were
-    one video: downloading it silently expands into a full playlist dump (every
-    video landing under a `Videos/` subfolder instead of the channel root) and,
-    once recorded, permanently blocks re-discovery of any video published after
-    that one-time dump. Descend into the Videos/Shorts tabs so callers always
-    see per-video entries.
+def _new_entries_since(url: str, include_shorts: bool, cutoff_ts: float) -> list[dict]:
+    """Only ever return videos published at/after `cutoff_ts` (the follow date),
+    regardless of what has or hasn't been recorded as already downloaded. This is
+    the hard ceiling: even if the Download/MediaItem bookkeeping is wrong, empty,
+    or reset, the channel's full back catalog can never be mistaken for "new".
+
+    A bare channel URL (e.g. .../@handle) flat-extracts to its tabs
+    (Videos/Shorts/Live) rather than individual videos -- each tab is itself a
+    nested playlist. Resolve to the relevant tab(s) first so a break in one
+    doesn't swallow the others.
     """
+    tab_urls = _relevant_tab_urls(url, include_shorts)
+    collected: list[dict] = []
+    for tab_url in tab_urls:
+        try:
+            collected.extend(_new_entries_in_playlist(tab_url, cutoff_ts))
+        except Exception as exc:
+            logger.error("failed to scan %s: %s", tab_url, exc)
+    return collected
+
+
+def _relevant_tab_urls(url: str, include_shorts: bool) -> list[str]:
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
+        info = ydl.extract_info(url, download=False) or {}
     entries = info.get("entries")
     if not entries or not all(e.get("_type") == "playlist" for e in entries):
-        return info
+        return [url]
 
-    merged: list[dict] = []
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
-        for tab in entries:
-            tab_url = tab.get("webpage_url") or tab.get("url") or ""
-            if not any(tab_url.rstrip("/").endswith(suffix) for suffix in _RELEVANT_TAB_SUFFIXES):
-                continue
-            tab_info = ydl.extract_info(tab_url, download=False) or {}
-            merged.extend(tab_info.get("entries") or [])
-
-    info = dict(info)
-    info["entries"] = merged
-    return info
+    tab_urls = []
+    for tab in entries:
+        tab_url = tab.get("webpage_url") or tab.get("url") or ""
+        suffix = tab_url.rstrip("/")
+        if suffix.endswith("/videos") or (include_shorts and suffix.endswith("/shorts")):
+            tab_urls.append(tab_url)
+    return tab_urls
 
 
-def _is_short(url: str) -> bool:
-    """YouTube shorts use a distinct /shorts/ URL path (videos and channel tab alike)."""
-    return "/shorts/" in url or url.rstrip("/").endswith("/shorts")
+def _new_entries_in_playlist(url: str, cutoff_ts: float) -> list[dict]:
+    """Fetch full per-video metadata one entry at a time (newest first),
+    stopping as soon as an entry older than `cutoff_ts` is hit. This is only
+    cheap because `break_on_reject` aborts extraction the moment it reaches
+    content that predates the follow -- it never walks the whole catalog.
+    """
+    collected: list[dict] = []
+
+    def match_filter(info: dict, *, incomplete: bool = False) -> str | None:
+        if incomplete:
+            # yt-dlp probes with partial info before the full per-video fetch;
+            # judge (and collect) only once full metadata is available.
+            return None
+        published = info.get("timestamp")
+        if published is None:
+            published = _parse_upload_date(info.get("upload_date"))
+        if published is None:
+            # Can't judge age for this extractor/entry -- let it through and
+            # rely on the Download/MediaItem dedupe check to avoid re-fetching.
+            collected.append(info)
+            return None
+        if published >= cutoff_ts:
+            collected.append(info)
+            return None
+        return "published before the follow date"
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": False,
+        "lazy_playlist": True,
+        "break_on_reject": True,
+        # Deliberately NOT ignoreerrors: with it set, a failed per-video fetch
+        # (rate-limit, private video, transient error) gets silently skipped
+        # and extraction moves on to the *next* (older) entry instead of
+        # stopping -- defeating the "stop at the first old video" bound this
+        # function relies on to stay cheap, and walking arbitrarily deep into
+        # the back catalog while erroring on every entry. Stopping on the
+        # first error is the safe default: we may miss a video behind a
+        # transient error until the next poll, but we never tunnel through
+        # history.
+        "match_filter": match_filter,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=False)
+    except RejectedVideoReached:
+        pass
+    except yt_dlp.utils.DownloadError as exc:
+        logger.warning("stopped scanning %s early after an error: %s", url, exc)
+    return collected
 
 
-def _collect_urls(info: dict, entries) -> list[str]:
-    if entries:
-        return [
-            e.get("webpage_url") or e.get("url")
-            for e in entries
-            if e.get("webpage_url") or e.get("url")
-        ]
-    url = info.get("webpage_url") or info.get("url")
-    return [url] if url else []
+def _parse_upload_date(date: str | None) -> float | None:
+    if not date:
+        return None
+    return datetime.strptime(date, "%Y%m%d").replace(tzinfo=timezone.utc).timestamp()
 
 
 def schedule_source(source: Source, run_now: bool = False) -> None:
