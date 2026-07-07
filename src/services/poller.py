@@ -151,15 +151,16 @@ def _new_entries_in_playlist(url: str, cutoff_ts: float) -> list[dict]:
         "extract_flat": False,
         "lazy_playlist": True,
         "break_on_reject": True,
-        # Deliberately NOT ignoreerrors: with it set, a failed per-video fetch
-        # (rate-limit, private video, transient error) gets silently skipped
-        # and extraction moves on to the *next* (older) entry instead of
-        # stopping -- defeating the "stop at the first old video" bound this
-        # function relies on to stay cheap, and walking arbitrarily deep into
-        # the back catalog while erroring on every entry. Stopping on the
-        # first error is the safe default: we may miss a video behind a
-        # transient error until the next poll, but we never tunnel through
-        # history.
+        # A stray age-restricted/private video shouldn't blind the scan to
+        # everything after it, so individual failures are tolerated (same
+        # reasoning as downloader.py). But blanket ignoreerrors alone caused
+        # the rate-limit incident: a systemic failure (every entry erroring)
+        # never trips break_on_reject and silently walks the entire catalog.
+        # skip_playlist_after_errors bounds that -- a few gated videos scroll
+        # past, but a run of failures aborts the scan instead of tunneling
+        # through history.
+        "ignoreerrors": True,
+        "skip_playlist_after_errors": 3,
         "match_filter": match_filter,
     }
     try:
