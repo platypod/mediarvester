@@ -8,7 +8,7 @@ from sqlalchemy import select
 from yt_dlp.utils import RejectedVideoReached
 
 from db import Download, MediaItem, Source, async_session
-from services.downloader import downloader
+from services.downloader import downloader, get_cookies_path
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,11 @@ async def poll_source(source_id: int) -> None:
             await _label_source(source)
 
         cutoff_ts = source.created_at.replace(tzinfo=timezone.utc).timestamp()
+        cookies = get_cookies_path(source.owner)
         try:
             loop = asyncio.get_event_loop()
             entries = await loop.run_in_executor(
-                None, lambda: _new_entries_since(source.url, source.include_shorts, cutoff_ts)
+                None, lambda: _new_entries_since(source.url, source.include_shorts, cutoff_ts, cookies)
             )
         except Exception as exc:
             logger.error("failed to fetch source %d: %s", source_id, exc)
@@ -65,8 +66,9 @@ async def poll_source(source_id: int) -> None:
 
 async def _label_source(source: Source) -> None:
     loop = asyncio.get_event_loop()
+    cookies = get_cookies_path(source.owner)
     try:
-        info = await loop.run_in_executor(None, lambda: _extract_flat(source.url))
+        info = await loop.run_in_executor(None, lambda: _extract_flat(source.url, cookies))
     except Exception:
         return
     if info:
@@ -74,15 +76,18 @@ async def _label_source(source: Source) -> None:
         source.platform = info.get("extractor")
 
 
-def _extract_flat(url: str) -> dict:
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
+def _extract_flat(url: str, cookies: str | None) -> dict:
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+    if cookies:
+        opts["cookiefile"] = cookies
+    with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False) or {}
 
 
 _RELEVANT_TAB_SUFFIXES = ("/videos", "/shorts")
 
 
-def _new_entries_since(url: str, include_shorts: bool, cutoff_ts: float) -> list[dict]:
+def _new_entries_since(url: str, include_shorts: bool, cutoff_ts: float, cookies: str | None) -> list[dict]:
     """Only ever return videos published at/after `cutoff_ts` (the follow date),
     regardless of what has or hasn't been recorded as already downloaded. This is
     the hard ceiling: even if the Download/MediaItem bookkeeping is wrong, empty,
@@ -92,20 +97,24 @@ def _new_entries_since(url: str, include_shorts: bool, cutoff_ts: float) -> list
     (Videos/Shorts/Live) rather than individual videos -- each tab is itself a
     nested playlist. Resolve to the relevant tab(s) first so a break in one
     doesn't swallow the others.
+
+    The owner's cookies are applied here, same as in downloader.py: a
+    private/membership-only or age-restricted video that the account actually
+    has access to would otherwise look like an unrecoverable error during
+    discovery, even though downloading it would have succeeded.
     """
-    tab_urls = _relevant_tab_urls(url, include_shorts)
+    tab_urls = _relevant_tab_urls(url, include_shorts, cookies)
     collected: list[dict] = []
     for tab_url in tab_urls:
         try:
-            collected.extend(_new_entries_in_playlist(tab_url, cutoff_ts))
+            collected.extend(_new_entries_in_playlist(tab_url, cutoff_ts, cookies))
         except Exception as exc:
             logger.error("failed to scan %s: %s", tab_url, exc)
     return collected
 
 
-def _relevant_tab_urls(url: str, include_shorts: bool) -> list[str]:
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
-        info = ydl.extract_info(url, download=False) or {}
+def _relevant_tab_urls(url: str, include_shorts: bool, cookies: str | None) -> list[str]:
+    info = _extract_flat(url, cookies)
     entries = info.get("entries")
     if not entries or not all(e.get("_type") == "playlist" for e in entries):
         return [url]
@@ -119,7 +128,7 @@ def _relevant_tab_urls(url: str, include_shorts: bool) -> list[str]:
     return tab_urls
 
 
-def _new_entries_in_playlist(url: str, cutoff_ts: float) -> list[dict]:
+def _new_entries_in_playlist(url: str, cutoff_ts: float, cookies: str | None) -> list[dict]:
     """Fetch full per-video metadata one entry at a time (newest first),
     stopping as soon as an entry older than `cutoff_ts` is hit. This is only
     cheap because `break_on_reject` aborts extraction the moment it reaches
@@ -163,6 +172,8 @@ def _new_entries_in_playlist(url: str, cutoff_ts: float) -> list[dict]:
         "skip_playlist_after_errors": 3,
         "match_filter": match_filter,
     }
+    if cookies:
+        opts["cookiefile"] = cookies
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(url, download=False)
