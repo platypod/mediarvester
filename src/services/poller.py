@@ -171,6 +171,11 @@ def _new_entries_in_playlist(url: str, cutoff_ts: float, cookies: str | None) ->
         "ignoreerrors": True,
         "skip_playlist_after_errors": 3,
         "match_filter": match_filter,
+        # Fetching full per-video metadata for every entry back-to-back with no
+        # delay is what trips YouTube's rate limiter in the first place (the
+        # skip_playlist_after_errors guard above only bounds the damage after
+        # the fact). Spacing requests out keeps the scan under the threshold.
+        "sleep_interval_requests": 1,
     }
     if cookies:
         opts["cookiefile"] = cookies

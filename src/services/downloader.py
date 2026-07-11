@@ -44,7 +44,12 @@ class Downloader:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-            self._schedule(self._on_success(download_id, info or {}, owner))
+            if not info:
+                # ignoreerrors makes yt-dlp swallow a total failure on a single
+                # item (e.g. rate-limited/unavailable video) and return None
+                # instead of raising -- don't record that as a success.
+                raise yt_dlp.utils.DownloadError(f"no media extracted for {url}")
+            self._schedule(self._on_success(download_id, info, owner))
         except Exception as exc:
             logger.error("download %d failed: %s", download_id, exc)
             self._schedule(self._on_error(download_id, str(exc)))
@@ -75,6 +80,10 @@ class Downloader:
             "quiet": True,
             "no_warnings": True,
             "noprogress": True,
+            # See services/poller.py -- unthrottled per-entry requests (e.g. a
+            # playlist URL submitted directly) are what trip YouTube's rate
+            # limiter in the first place.
+            "sleep_interval_requests": 1,
         }
         if force:
             # Recovery after a restart: an interrupted job may have left a partial
