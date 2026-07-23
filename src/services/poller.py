@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import yt_dlp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -44,12 +45,23 @@ async def poll_source(source_id: int) -> None:
             if not url:
                 continue
             already_dl = (
-                await session.execute(select(Download).where(Download.url == url).limit(1))
+                await session.execute(
+                    select(Download)
+                    .where(Download.owner == source.owner)
+                    .where(Download.url == url)
+                    .where(Download.status.in_(("queued", "downloading", "done")))
+                    .limit(1)
+                )
             ).scalar_one_or_none()
             if already_dl:
                 continue
             already_media = (
-                await session.execute(select(MediaItem).where(MediaItem.source_url == url).limit(1))
+                await session.execute(
+                    select(MediaItem)
+                    .where(MediaItem.owner == source.owner)
+                    .where(MediaItem.source_url == url)
+                    .limit(1)
+                )
             ).scalar_one_or_none()
             if already_media:
                 continue
@@ -84,7 +96,7 @@ def _extract_flat(url: str, cookies: str | None) -> dict:
         return ydl.extract_info(url, download=False) or {}
 
 
-_RELEVANT_TAB_SUFFIXES = ("/videos", "/shorts")
+_RELEVANT_TAB_SUFFIXES = ("/videos", "/streams", "/shorts")
 
 
 def _new_entries_since(url: str, include_shorts: bool, cutoff_ts: float, cookies: str | None) -> list[dict]:
@@ -119,13 +131,16 @@ def _relevant_tab_urls(url: str, include_shorts: bool, cookies: str | None) -> l
     if not entries or not all(e.get("_type") == "playlist" for e in entries):
         return [url]
 
-    tab_urls = []
+    wanted_suffixes = tuple(
+        suffix for suffix in _RELEVANT_TAB_SUFFIXES if include_shorts or suffix != "/shorts"
+    )
+    tab_urls: list[str] = []
     for tab in entries:
         tab_url = tab.get("webpage_url") or tab.get("url") or ""
-        suffix = tab_url.rstrip("/")
-        if suffix.endswith("/videos") or (include_shorts and suffix.endswith("/shorts")):
+        path = urlparse(tab_url).path.rstrip("/").lower()
+        if any(path.endswith(suffix) for suffix in wanted_suffixes):
             tab_urls.append(tab_url)
-    return tab_urls
+    return tab_urls or [url]
 
 
 def _new_entries_in_playlist(url: str, cutoff_ts: float, cookies: str | None) -> list[dict]:

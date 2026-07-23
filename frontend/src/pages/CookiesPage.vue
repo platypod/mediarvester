@@ -5,7 +5,13 @@ import CookiesDropZone from '../components/CookiesDropZone.vue'
 
 const store = useSettingsStore()
 
-onMounted(() => store.fetchCookiesStatus())
+onMounted(async () => {
+  try {
+    await store.fetchCookiesStatus()
+  } catch {
+    // Rendered via store.cookiesStatusError.
+  }
+})
 
 async function handleFile(file: File) {
   await store.uploadCookies(file)
@@ -67,9 +73,12 @@ function formatDate(iso: string | null): string {
       <div class="flex items-center gap-2 text-sm">
         <span
           class="w-2 h-2 rounded-full flex-shrink-0"
-          :class="store.cookiesStatus.has_cookies ? 'bg-green-500' : 'bg-gray-600'"
+          :class="store.cookiesStatusError ? 'bg-yellow-500' : (store.cookiesStatus.has_cookies ? 'bg-green-500' : 'bg-gray-600')"
         />
-        <span v-if="store.cookiesStatus.has_cookies" class="text-gray-300">
+        <span v-if="store.cookiesStatusError" class="text-yellow-300">
+          Cookie status unavailable — {{ store.cookiesStatusError }}
+        </span>
+        <span v-else-if="store.cookiesStatus.has_cookies" class="text-gray-300">
           Cookies active — last uploaded {{ formatDate(store.cookiesStatus.uploaded_at) }}
         </span>
         <span v-else class="text-gray-500">No cookies uploaded yet</span>

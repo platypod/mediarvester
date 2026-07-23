@@ -15,6 +15,7 @@ interface VersionInfo {
 export const useSettingsStore = defineStore('settings', () => {
   const user = ref<string>('anonymous')
   const cookiesStatus = ref<CookiesStatus>({ has_cookies: false, uploaded_at: null })
+  const cookiesStatusError = ref('')
   const uploading = ref(false)
   const uploadError = ref('')
   const version = ref<string>('dev')
@@ -32,7 +33,13 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function fetchCookiesStatus() {
-    cookiesStatus.value = await api.get<CookiesStatus>('/api/settings/cookies')
+    cookiesStatusError.value = ''
+    try {
+      cookiesStatus.value = await api.get<CookiesStatus>('/api/settings/cookies')
+    } catch (e: unknown) {
+      cookiesStatusError.value = e instanceof Error ? e.message : 'Failed to fetch cookies status.'
+      throw e
+    }
   }
 
   async function uploadCookies(file: File): Promise<void> {
@@ -41,12 +48,17 @@ export const useSettingsStore = defineStore('settings', () => {
     try {
       const form = new FormData()
       form.append('file', file)
-      const res = await fetch('/api/settings/cookies', { method: 'POST', body: form })
+      const res = await fetch('/api/settings/cookies', {
+        method: 'POST',
+        credentials: 'include',
+        body: form,
+      })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.detail ?? `HTTP ${res.status}`)
       }
       cookiesStatus.value = await res.json()
+      cookiesStatusError.value = ''
     } catch (e: unknown) {
       uploadError.value = e instanceof Error ? e.message : 'Upload failed.'
       throw e
@@ -55,5 +67,17 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  return { user, cookiesStatus, uploading, uploadError, version, githubUrl, fetchMe, fetchCookiesStatus, fetchVersion, uploadCookies }
+  return {
+    user,
+    cookiesStatus,
+    cookiesStatusError,
+    uploading,
+    uploadError,
+    version,
+    githubUrl,
+    fetchMe,
+    fetchCookiesStatus,
+    fetchVersion,
+    uploadCookies,
+  }
 })

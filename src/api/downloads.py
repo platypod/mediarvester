@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
@@ -34,6 +35,22 @@ class DownloadRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+def _is_probably_collection_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/").lower()
+    query = parse_qs(parsed.query)
+
+    if "list" in query:
+        return True
+    if path.endswith("/playlist"):
+        return True
+    if path.endswith(("/videos", "/shorts", "/streams")):
+        return True
+    if path.startswith(("/channel/", "/user/", "/c/", "/@")):
+        return True
+    return False
+
+
 @router.post("", response_model=DownloadRead, status_code=201)
 async def create_download(
     body: DownloadCreate,
@@ -41,39 +58,58 @@ async def create_download(
     owner: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    # Already downloaded, or already in flight — return that instead of
-    # enqueuing a duplicate yt-dlp job and a duplicate MediaItem row.
+    is_collection = _is_probably_collection_url(body.url)
+
+    # Never queue the same URL twice concurrently for one owner.
     existing = (
         await session.execute(
             select(Download)
             .where(Download.owner == owner)
             .where(Download.url == body.url)
-            .where(Download.status.in_(("queued", "downloading", "done")))
+            .where(Download.status.in_(("queued", "downloading")))
             .order_by(Download.created_at.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
-    if not existing:
-        existing = (
-            await session.execute(
-                select(Download)
-                .join(MediaItem, MediaItem.download_id == Download.id)
-                .where(Download.owner == owner)
-                .where(MediaItem.source_url == body.url)
-                .order_by(Download.created_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
     if existing:
         response.status_code = 200
         return existing
 
-    dl = Download(url=body.url, owner=owner)
-    session.add(dl)
-    await session.commit()
-    await session.refresh(dl)
-    downloader.enqueue(dl.id, dl.url, owner)
-    return dl
+    # For single-item URLs, dedupe already-complete records.
+    # For collection URLs (playlist/channel tabs), allow re-runs so users can
+    # fetch entries missed during a previous partial run.
+    if not is_collection:
+        existing = (
+            await session.execute(
+                select(Download)
+                .where(Download.owner == owner)
+                .where(Download.url == body.url)
+                .where(Download.status == "done")
+                .order_by(Download.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if not existing:
+            existing = (
+                await session.execute(
+                    select(Download)
+                    .join(MediaItem, MediaItem.download_id == Download.id)
+                    .where(Download.owner == owner)
+                    .where(MediaItem.source_url == body.url)
+                    .order_by(Download.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+    if not existing:
+        dl = Download(url=body.url, owner=owner)
+        session.add(dl)
+        await session.commit()
+        await session.refresh(dl)
+        downloader.enqueue(dl.id, dl.url, owner)
+        return dl
+
+    response.status_code = 200
+    return existing
 
 
 @router.get("", response_model=list[DownloadRead])
