@@ -9,6 +9,7 @@ from pathlib import Path
 import yt_dlp
 
 from db import Download, MediaItem, async_session
+from services.episode_naming import resolve_episode
 
 logger = getLogger(__name__)
 
@@ -26,6 +27,61 @@ def get_cookies_path(owner: str) -> str | None:
     if global_path and Path(global_path).exists():
         return global_path
     return None
+
+
+def _iter_downloaded_entries(info: dict) -> list[dict]:
+    """Return the info dict for every file yt-dlp actually wrote.
+
+    A single-video download carries its own top-level `requested_downloads`.
+    A collection (playlist/channel) download instead nests one info dict per
+    item under `entries` -- entries that failed extraction/download are
+    `None` or lack `requested_downloads` (ignoreerrors) and are skipped here
+    rather than treated as a downloaded file.
+    """
+    if info.get("requested_downloads"):
+        return [info]
+    entries = info.get("entries") or []
+    return [e for e in entries if e and e.get("requested_downloads")]
+
+
+def _apply_episode_prefix(abs_path: str, entry: dict) -> str:
+    """Rename a just-downloaded file (and its sidecars) to `N - Title.ext`
+    when an episode number can be resolved, so the on-disk name is right
+    from the first write -- no separate manual renaming pass needed."""
+    resolved = resolve_episode(entry)
+    if resolved is None:
+        return abs_path
+    number, title = resolved
+
+    src = Path(abs_path)
+    title = (title or src.stem).replace("/", "-").strip()
+    new_stem = f"{number} - {title}"
+    if new_stem == src.stem:
+        return abs_path
+    new_path = src.with_name(f"{new_stem}{src.suffix}")
+
+    try:
+        src.rename(new_path)
+    except OSError as exc:
+        logger.warning("could not apply episode prefix to %s: %s", src.name, exc)
+        return abs_path
+
+    # yt-dlp writes .info.json / thumbnail sidecars next to the video under
+    # the same stem (e.g. "title.info.json", "title.webp") -- move them along
+    # so they don't end up orphaned under the old name.
+    stem = src.stem
+    for name in os.listdir(src.parent):
+        if name == src.name or not name.startswith(stem):
+            continue
+        rest = name[len(stem) :]
+        if not rest.startswith("."):
+            continue  # shares a prefix but isn't actually a sidecar of this file
+        try:
+            (src.parent / name).rename(src.parent / f"{new_stem}{rest}")
+        except OSError as exc:
+            logger.warning("could not move sidecar %s alongside renamed episode: %s", name, exc)
+
+    return str(new_path)
 
 
 class Downloader:
@@ -82,8 +138,15 @@ class Downloader:
             "noprogress": True,
             # See services/poller.py -- unthrottled per-entry requests (e.g. a
             # playlist URL submitted directly) are what trip YouTube's rate
-            # limiter in the first place.
+            # limiter in the first place. This spaces out the extraction
+            # requests yt-dlp makes internally while walking a playlist/
+            # channel URL passed straight to a download (the poller's own
+            # sleep_interval_requests only covers its separate metadata scan,
+            # not this path).
             "sleep_interval_requests": 1,
+            # ...and this spaces out the actual per-video downloads within a
+            # playlist/channel download, for the same reason.
+            "sleep_interval": 2,
         }
         if force:
             # Recovery after a restart: an interrupted job may have left a partial
@@ -126,41 +189,63 @@ class Downloader:
             if not dl:
                 return
 
+            entries = _iter_downloaded_entries(info)
+            if not entries:
+                # ignoreerrors=True means a playlist/channel download where
+                # every entry individually failed (e.g. rate-limited, 403s)
+                # still returns a truthy top-level `info` -- without this
+                # check that gets recorded as "done" despite nothing actually
+                # landing on disk.
+                dl.status = "error"
+                dl.error = "no files were successfully downloaded"
+                dl.finished_at = datetime.utcnow()
+                await session.commit()
+                return
+
             dl.status = "done"
             dl.progress = 100.0
             dl.finished_at = datetime.utcnow()
             dl.title = info.get("title")
             dl.platform = info.get("extractor")
 
-            requested = info.get("requested_downloads") or [{}]
-            abs_path = requested[0].get("filepath", "")
-            # Normalise away double slashes that arise when optional template
-            # components (e.g. playlist) are absent and evaluate to "".
-            if abs_path:
-                abs_path = str(Path(abs_path))
-            local_path = os.path.relpath(abs_path, MEDIA_ROOT) if abs_path else ""
+            for entry in entries:
+                item = self._build_media_item(entry, owner, download_id, dl.url)
+                if item:
+                    session.add(item)
 
-            thumbnail_path: str | None = None
-            if local_path:
-                base = Path(MEDIA_ROOT) / local_path
-                for ext in (".jpg", ".png", ".webp"):
-                    candidate = base.with_suffix(ext)
-                    if candidate.exists():
-                        thumbnail_path = os.path.relpath(str(candidate), MEDIA_ROOT)
-                        break
-
-            item = MediaItem(
-                title=info.get("title") or dl.url,
-                platform=info.get("extractor"),
-                source_url=info.get("webpage_url") or dl.url,
-                local_path=local_path,
-                thumbnail_path=thumbnail_path,
-                duration_seconds=info.get("duration"),
-                owner=owner,
-                download_id=download_id,
-            )
-            session.add(item)
             await session.commit()
+
+    def _build_media_item(
+        self, entry: dict, owner: str, download_id: int, fallback_url: str
+    ) -> MediaItem | None:
+        requested = entry.get("requested_downloads") or [{}]
+        abs_path = requested[0].get("filepath", "")
+        if not abs_path:
+            return None
+        # Normalise away double slashes that arise when optional template
+        # components (e.g. playlist) are absent and evaluate to "".
+        abs_path = str(Path(abs_path))
+        abs_path = _apply_episode_prefix(abs_path, entry)
+        local_path = os.path.relpath(abs_path, MEDIA_ROOT)
+
+        thumbnail_path: str | None = None
+        base = Path(MEDIA_ROOT) / local_path
+        for ext in (".jpg", ".png", ".webp"):
+            candidate = base.with_suffix(ext)
+            if candidate.exists():
+                thumbnail_path = os.path.relpath(str(candidate), MEDIA_ROOT)
+                break
+
+        return MediaItem(
+            title=entry.get("title") or fallback_url,
+            platform=entry.get("extractor"),
+            source_url=entry.get("webpage_url") or fallback_url,
+            local_path=local_path,
+            thumbnail_path=thumbnail_path,
+            duration_seconds=entry.get("duration"),
+            owner=owner,
+            download_id=download_id,
+        )
 
     async def _on_error(self, download_id: int, error: str) -> None:
         async with async_session() as session:
