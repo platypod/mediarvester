@@ -30,18 +30,20 @@ def get_cookies_path(owner: str) -> str | None:
 
 
 def _iter_downloaded_entries(info: dict) -> list[dict]:
-    """Return the info dict for every file yt-dlp actually wrote.
+    """Return the info dict for every entry a download attempted.
 
-    A single-video download carries its own top-level `requested_downloads`.
-    A collection (playlist/channel) download instead nests one info dict per
-    item under `entries` -- entries that failed extraction/download are
-    `None` or lack `requested_downloads` (ignoreerrors) and are skipped here
-    rather than treated as a downloaded file.
+    A single-video download is one entry: `info` itself. A collection
+    (playlist/channel) download instead nests one info dict per item under
+    `entries` -- entries that failed extraction are `None` (ignoreerrors) and
+    are skipped here. Whether an entry actually produced a usable file is
+    decided separately in `_build_media_item`: `requested_downloads` can be
+    present with no real file behind it when the download itself failed
+    after format selection (e.g. a `.part` left stuck mid-transfer), so its
+    mere presence here isn't proof of a completed download.
     """
-    if info.get("requested_downloads"):
-        return [info]
-    entries = info.get("entries") or []
-    return [e for e in entries if e and e.get("requested_downloads")]
+    if "entries" in info:
+        return [e for e in (info.get("entries") or []) if e]
+    return [info]
 
 
 def _apply_episode_prefix(abs_path: str, entry: dict) -> str:
@@ -189,10 +191,16 @@ class Downloader:
             if not dl:
                 return
 
-            entries = _iter_downloaded_entries(info)
-            if not entries:
+            items = [
+                item
+                for entry in _iter_downloaded_entries(info)
+                if (item := self._build_media_item(entry, owner, download_id, dl.url))
+            ]
+
+            if not items:
                 # ignoreerrors=True means a playlist/channel download where
-                # every entry individually failed (e.g. rate-limited, 403s)
+                # every entry individually failed (e.g. rate-limited, 403s,
+                # or a per-entry download that never got past a `.part` file)
                 # still returns a truthy top-level `info` -- without this
                 # check that gets recorded as "done" despite nothing actually
                 # landing on disk.
@@ -208,10 +216,8 @@ class Downloader:
             dl.title = info.get("title")
             dl.platform = info.get("extractor")
 
-            for entry in entries:
-                item = self._build_media_item(entry, owner, download_id, dl.url)
-                if item:
-                    session.add(item)
+            for item in items:
+                session.add(item)
 
             await session.commit()
 
@@ -220,7 +226,11 @@ class Downloader:
     ) -> MediaItem | None:
         requested = entry.get("requested_downloads") or [{}]
         abs_path = requested[0].get("filepath", "")
-        if not abs_path:
+        # `filepath` can be present with the entry otherwise indicating the
+        # download never actually completed (e.g. it's still sitting as a
+        # `.part` file after a mid-transfer failure) -- checking existence
+        # of the real, final path is what actually proves a file landed.
+        if not abs_path or not Path(abs_path).exists():
             return None
         # Normalise away double slashes that arise when optional template
         # components (e.g. playlist) are absent and evaluate to "".
