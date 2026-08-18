@@ -1,9 +1,12 @@
-# frontend/dist is built natively (not through QEMU) by the CI workflow
-# before this Dockerfile ever runs -- see .github/workflows/build.yml. The
-# frontend is pure JS/CSS/HTML with no architecture dependency, so building
-# it once outside the multi-arch matrix (instead of once per emulated arch)
-# is a large chunk of build time back.
+# --- Frontend build ---
+FROM node:20-slim AS frontend-builder
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
 
+# --- App ---
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.source=https://github.com/platypod/mediarvester
@@ -21,7 +24,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
-COPY frontend/dist ./frontend/dist
+COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
 RUN mkdir -p /app/data /app/downloads
 

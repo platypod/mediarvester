@@ -17,19 +17,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -53,8 +40,6 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           tags: |
             ghcr.io/platypod/mediarvester:${{ steps.tag.outputs.version }}
             ghcr.io/platypod/mediarvester:latest
