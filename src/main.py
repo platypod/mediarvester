@@ -23,6 +23,13 @@ basicConfig(
 )
 logger = getLogger(__name__)
 
+# Applied once, process-wide, before any directory/file is created (by us or by
+# yt-dlp internally) — matches the UMASK the *arr apps get via PUID/PGID/UMASK,
+# adapted here since this isn't a linuxserver.io/s6-overlay image.
+umask = environ.get("UMASK")
+if umask:
+    os.umask(int(umask, 8))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
