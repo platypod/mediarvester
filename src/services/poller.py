@@ -31,14 +31,19 @@ async def poll_source(source_id: int) -> None:
         cookies = get_cookies_path(source.owner)
         try:
             loop = asyncio.get_event_loop()
-            entries = await loop.run_in_executor(
+            entries, poll_error = await loop.run_in_executor(
                 None, lambda: _new_entries_since(source.url, source.include_shorts, cutoff_ts, cookies)
             )
         except Exception as exc:
             logger.error("failed to fetch source %d: %s", source_id, exc)
             source.last_polled_at = datetime.utcnow()
+            source.last_poll_error = str(exc)
             await session.commit()
             return
+
+        if poll_error:
+            logger.warning("source %d poll degraded: %s", source_id, poll_error)
+        source.last_poll_error = poll_error
 
         for entry in entries:
             url = entry.get("webpage_url") or entry.get("url")
@@ -88,8 +93,19 @@ async def _label_source(source: Source) -> None:
         source.platform = info.get("extractor")
 
 
+# YouTube's auto-selected clients (e.g. android_vr) increasingly serve
+# SABR-only streams or trip rate limits more readily than mweb does --
+# see services/downloader.py's _build_opts for the full story and the
+# 2026-08-19 incident that verified this empirically for downloads. Applied
+# here too since discovery scans hit the same extractor.
+_YOUTUBE_OPTS = {
+    "js_runtimes": {"node": {}},
+    "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+}
+
+
 def _extract_flat(url: str, cookies: str | None) -> dict:
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, **_YOUTUBE_OPTS}
     if cookies:
         opts["cookiefile"] = cookies
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -99,7 +115,9 @@ def _extract_flat(url: str, cookies: str | None) -> dict:
 _RELEVANT_TAB_SUFFIXES = ("/videos", "/streams", "/shorts")
 
 
-def _new_entries_since(url: str, include_shorts: bool, cutoff_ts: float, cookies: str | None) -> list[dict]:
+def _new_entries_since(
+    url: str, include_shorts: bool, cutoff_ts: float, cookies: str | None
+) -> tuple[list[dict], str | None]:
     """Only ever return videos published at/after `cutoff_ts` (the follow date),
     regardless of what has or hasn't been recorded as already downloaded. This is
     the hard ceiling: even if the Download/MediaItem bookkeeping is wrong, empty,
@@ -114,15 +132,27 @@ def _new_entries_since(url: str, include_shorts: bool, cutoff_ts: float, cookies
     private/membership-only or age-restricted video that the account actually
     has access to would otherwise look like an unrecoverable error during
     discovery, even though downloading it would have succeeded.
+
+    Returns `(entries, error)` -- `error` is set whenever a tab's scan was cut
+    short by errors rather than cleanly reaching the cutoff. A source that
+    degrades identically on every poll (e.g. stale cookies) would otherwise
+    silently report "zero new videos" forever with no distinguishable signal
+    from "genuinely nothing new" -- confirmed 2026-08-19, six weeks of missed
+    uploads on a followed source with no error anywhere queryable.
     """
     tab_urls = _relevant_tab_urls(url, include_shorts, cookies)
     collected: list[dict] = []
+    errors: list[str] = []
     for tab_url in tab_urls:
         try:
-            collected.extend(_new_entries_in_playlist(tab_url, cutoff_ts, cookies))
+            entries, error = _new_entries_in_playlist(tab_url, cutoff_ts, cookies)
+            collected.extend(entries)
+            if error:
+                errors.append(f"{tab_url}: {error}")
         except Exception as exc:
             logger.error("failed to scan %s: %s", tab_url, exc)
-    return collected
+            errors.append(f"{tab_url}: {exc}")
+    return collected, "; ".join(errors) if errors else None
 
 
 def _relevant_tab_urls(url: str, include_shorts: bool, cookies: str | None) -> list[str]:
@@ -143,11 +173,14 @@ def _relevant_tab_urls(url: str, include_shorts: bool, cookies: str | None) -> l
     return tab_urls or [url]
 
 
-def _new_entries_in_playlist(url: str, cutoff_ts: float, cookies: str | None) -> list[dict]:
+def _new_entries_in_playlist(url: str, cutoff_ts: float, cookies: str | None) -> tuple[list[dict], str | None]:
     """Fetch full per-video metadata one entry at a time (newest first),
     stopping as soon as an entry older than `cutoff_ts` is hit. This is only
     cheap because `break_on_reject` aborts extraction the moment it reaches
     content that predates the follow -- it never walks the whole catalog.
+
+    Returns `(entries, error)` -- see `_new_entries_since` for why the error
+    signal matters as much as the entries themselves.
     """
     collected: list[dict] = []
 
@@ -191,6 +224,7 @@ def _new_entries_in_playlist(url: str, cutoff_ts: float, cookies: str | None) ->
         # skip_playlist_after_errors guard above only bounds the damage after
         # the fact). Spacing requests out keeps the scan under the threshold.
         "sleep_interval_requests": 1,
+        **_YOUTUBE_OPTS,
     }
     if cookies:
         opts["cookiefile"] = cookies
@@ -198,10 +232,11 @@ def _new_entries_in_playlist(url: str, cutoff_ts: float, cookies: str | None) ->
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(url, download=False)
     except RejectedVideoReached:
-        pass
+        return collected, None
     except yt_dlp.utils.DownloadError as exc:
         logger.warning("stopped scanning %s early after an error: %s", url, exc)
-    return collected
+        return collected, str(exc)
+    return collected, None
 
 
 def _parse_upload_date(date: str | None) -> float | None:

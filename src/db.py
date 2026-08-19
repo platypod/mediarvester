@@ -47,6 +47,13 @@ class Source(Base):
     poll_interval_minutes: Mapped[int] = mapped_column(default=60)
     owner: Mapped[str] = mapped_column(default="anonymous", server_default="anonymous")
     last_polled_at: Mapped[datetime | None]
+    # Set whenever a poll's discovery scan gets cut short by errors (rather
+    # than cleanly reaching the follow-date cutoff) -- None means the most
+    # recent poll was clean. A source can silently miss new uploads for weeks
+    # if every poll degrades the same way (e.g. stale cookies) with nothing
+    # to show for it beyond a log line in a pod that gets recycled -- this is
+    # the persistent, queryable signal that was missing.
+    last_poll_error: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
@@ -84,3 +91,10 @@ async def create_all() -> None:
             await conn.execute(
                 text("ALTER TABLE source ADD COLUMN include_shorts BOOLEAN DEFAULT FALSE")
             )
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT last_poll_error FROM source LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE source ADD COLUMN last_poll_error TEXT"))

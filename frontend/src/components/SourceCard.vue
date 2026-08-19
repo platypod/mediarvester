@@ -28,6 +28,13 @@ function timeAgo(iso: string | null): string {
       </div>
       <p class="text-gray-100 text-sm font-medium truncate">{{ source.label ?? source.url }}</p>
       <p v-if="source.label" class="text-xs text-gray-500 truncate mt-0.5">{{ source.url }}</p>
+      <p
+        v-if="source.last_poll_error"
+        class="text-xs text-amber-400 mt-1 truncate"
+        :title="source.last_poll_error"
+      >
+        ⚠ last poll couldn't fetch everything — may need fresh cookies: {{ source.last_poll_error }}
+      </p>
       <label class="flex items-center gap-1.5 mt-1.5 text-xs text-gray-500 select-none">
         <input
           :checked="source.include_shorts"

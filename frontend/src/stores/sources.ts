@@ -11,6 +11,7 @@ export interface Source {
   include_shorts: boolean
   poll_interval_minutes: number
   last_polled_at: string | null
+  last_poll_error: string | null
   created_at: string
 }
 

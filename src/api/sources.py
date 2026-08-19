@@ -37,6 +37,7 @@ class SourceRead(BaseModel):
     poll_interval_minutes: int
     owner: str
     last_polled_at: datetime | None
+    last_poll_error: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
