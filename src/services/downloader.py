@@ -117,6 +117,18 @@ class Downloader:
             # Use Node.js for YouTube's n-challenge (requires yt-dlp-ejs + Node 22+).
             # yt-dlp defaults to deno-only; node must be explicitly enabled.
             "js_runtimes": {"node": {}},
+            # YouTube's "web"/default clients (and the ones yt-dlp auto-selects,
+            # e.g. android_vr) increasingly serve SABR-only streams with no
+            # direct HTTPS format URL yt-dlp can download -- see
+            # https://github.com/yt-dlp/yt-dlp/issues/12482. mweb is the
+            # maintainer-recommended client that still exposes real HTTPS
+            # formats when paired with a PO Token (bgutil-ytdlp-pot-provider
+            # sidecar); verified empirically 2026-08-19 to complete a full
+            # download with zero cookies. cookiefile below still gets applied
+            # on top when present, which is what age-restricted/members-only
+            # content needs -- mweb doesn't remove that requirement, it just
+            # means most public videos no longer depend on cookie freshness.
+            "extractor_args": {"youtube": {"player_client": ["mweb"]}},
             # Skip unavailable/age-restricted/private items instead of aborting the whole job.
             # Critical for playlists that mix public and restricted content.
             "ignoreerrors": True,
