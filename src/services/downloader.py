@@ -155,6 +155,18 @@ class Downloader:
             # content needs -- mweb doesn't remove that requirement, it just
             # means most public videos no longer depend on cookie freshness.
             "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+            # As of 2026-08-20, YouTube's "bind GVS PO Token to video ID"
+            # experiment 403s every adaptive/DASH request (video-only or
+            # audio-only itags) through mweb+bgutil, even with a fresh
+            # per-video token -- confirmed empirically against several
+            # videos. The single-file progressive stream (itag 18) isn't
+            # subject to it and still downloads cleanly. Preferring "best"
+            # (progressive) first means we only ever fall through to the
+            # adaptive merge -- and inherit that failure mode -- for the
+            # rare video that has no progressive format at all (e.g. some
+            # live VODs). Quality is capped at progressive's ceiling
+            # (usually 360p) for everything else until this is lifted.
+            "format": "best/bestvideo*+bestaudio",
             # Skip unavailable/age-restricted/private items instead of aborting the whole job.
             # Critical for playlists that mix public and restricted content.
             "ignoreerrors": True,
