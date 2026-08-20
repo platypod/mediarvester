@@ -13,6 +13,10 @@ export interface Download {
   source_id: number | null
   created_at: string
   finished_at: string | null
+  current_index: number | null
+  total_entries: number | null
+  current_title: string | null
+  completed_items: string[] | null
 }
 
 export const useDownloadsStore = defineStore('downloads', () => {

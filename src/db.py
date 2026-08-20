@@ -1,7 +1,7 @@
 from datetime import datetime
 from os import environ
 
-from sqlalchemy import ForeignKey, text
+from sqlalchemy import JSON, ForeignKey, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -33,6 +33,13 @@ class Download(Base):
     source_id: Mapped[int | None] = mapped_column(ForeignKey("source.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     finished_at: Mapped[datetime | None]
+    # Playlist/channel downloads only -- populated from yt-dlp's per-entry
+    # progress hook while a collection is in flight, so the UI can show
+    # "N of M" instead of a single progress bar that resets per video.
+    current_index: Mapped[int | None]
+    total_entries: Mapped[int | None]
+    current_title: Mapped[str | None]
+    completed_items: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class Source(Base):
@@ -98,3 +105,13 @@ async def create_all() -> None:
     except (OperationalError, ProgrammingError):
         async with engine.begin() as conn:
             await conn.execute(text("ALTER TABLE source ADD COLUMN last_poll_error TEXT"))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT current_index FROM download LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE download ADD COLUMN current_index INTEGER"))
+            await conn.execute(text("ALTER TABLE download ADD COLUMN total_entries INTEGER"))
+            await conn.execute(text("ALTER TABLE download ADD COLUMN current_title TEXT"))
+            await conn.execute(text("ALTER TABLE download ADD COLUMN completed_items JSON"))

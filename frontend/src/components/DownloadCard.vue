@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import type { Download } from '../stores/downloads'
 
 defineProps<{ download: Download }>()
 defineEmits<{ delete: [] }>()
+
+const showCompleted = ref(false)
 
 const statusClass: Record<string, string> = {
   queued: 'bg-yellow-900/60 text-yellow-300',
@@ -48,7 +51,31 @@ const statusClass: Record<string, string> = {
           :style="{ width: `${download.progress}%` }"
         />
       </div>
-      <p class="mt-1 text-xs text-gray-500">{{ download.progress.toFixed(0) }}%</p>
+      <div class="mt-1 flex items-center gap-2 text-xs text-gray-500">
+        <span>{{ download.progress.toFixed(0) }}%</span>
+        <span v-if="download.total_entries">
+          · {{ download.current_index ?? '?' }} of {{ download.total_entries }}
+        </span>
+        <span v-if="download.current_title" class="truncate">· {{ download.current_title }}</span>
+      </div>
+    </div>
+
+    <div v-if="download.completed_items?.length" class="mt-2">
+      <button
+        class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+        @click="showCompleted = !showCompleted"
+      >
+        {{ showCompleted ? '▾' : '▸' }} {{ download.completed_items.length }} downloaded so far
+      </button>
+      <ul v-if="showCompleted" class="mt-1 space-y-0.5 max-h-40 overflow-y-auto">
+        <li
+          v-for="(item, i) in download.completed_items"
+          :key="i"
+          class="text-xs text-gray-500 truncate"
+        >
+          {{ item }}
+        </li>
+      </ul>
     </div>
   </div>
 </template>

@@ -18,6 +18,31 @@ COOKIES_ROOT = environ.get("COOKIES_ROOT", "/app/cookies")
 CONCURRENCY = int(environ.get("DOWNLOAD_CONCURRENCY", "2"))
 
 
+class _YtDlpLogAdapter:
+    """Routes yt-dlp's own internal reporting through our logger instead of a
+    raw, unformatted write to stderr -- which is what it does by default even
+    with quiet=True (quiet only silences status/progress output, not
+    warnings/errors). Without this, per-entry failure reasons ("Requested
+    format is not available", 403s, etc.) are invisible to LOG_LEVEL and
+    impossible to correlate with a download id.
+    """
+
+    def __init__(self, download_id: int) -> None:
+        self._download_id = download_id
+
+    def debug(self, msg: str) -> None:
+        # yt-dlp routes its normal status/progress chatter here too (as
+        # "screen" output) when a logger is set -- keep it at debug so it's
+        # opt-in via LOG_LEVEL rather than always-on noise.
+        logger.debug("download %d: %s", self._download_id, msg)
+
+    def warning(self, msg: str) -> None:
+        logger.warning("download %d: %s", self._download_id, msg)
+
+    def error(self, msg: str) -> None:
+        logger.error("download %d: %s", self._download_id, msg)
+
+
 def get_cookies_path(owner: str) -> str | None:
     """Return the cookies file for a user, falling back to the global one."""
     user_path = Path(COOKIES_ROOT) / f"{owner}.txt"
@@ -98,6 +123,7 @@ class Downloader:
         self._executor.submit(self._run, download_id, url, owner, force)
 
     def _run(self, download_id: int, url: str, owner: str, force: bool = False) -> None:
+        logger.info("download %d starting: %s", download_id, url)
         opts = self._build_opts(download_id, owner, force)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -147,8 +173,11 @@ class Downloader:
             "writeinfojson": True,
             "writethumbnail": True,
             "progress_hooks": [lambda d: self._progress_hook(d, download_id)],
+            # Routes all of yt-dlp's own reporting (including what quiet/
+            # no_warnings would otherwise suppress or print raw to stderr)
+            # through our logger instead -- see _YtDlpLogAdapter.
+            "logger": _YtDlpLogAdapter(download_id),
             "quiet": True,
-            "no_warnings": True,
             "noprogress": True,
             # See services/poller.py -- unthrottled per-entry requests (e.g. a
             # playlist URL submitted directly) are what trip YouTube's rate
@@ -177,25 +206,68 @@ class Downloader:
         return opts
 
     def _progress_hook(self, d: dict, download_id: int) -> None:
+        # For a playlist/channel download, yt-dlp re-invokes this hook per
+        # entry with the current entry's own info dict -- that's where the
+        # entry's position and title within the collection live. A single-
+        # video download has no playlist_index/playlist_count, which is how
+        # the update below tells the two cases apart.
+        info = d.get("info_dict") or {}
+        playlist_index = info.get("playlist_index")
+        playlist_count = info.get("playlist_count") or info.get("n_entries")
+        title = info.get("title")
+
         if d["status"] == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes", 0)
             progress = (downloaded / total * 100) if total else 0.0
-            self._schedule(self._update_progress(download_id, progress))
+            self._schedule(
+                self._update_progress(download_id, progress, playlist_index, playlist_count, title)
+            )
         elif d["status"] == "finished":
-            self._schedule(self._update_progress(download_id, 100.0))
+            self._schedule(
+                self._update_progress(
+                    download_id, 100.0, playlist_index, playlist_count, title, entry_finished=True
+                )
+            )
 
     def _schedule(self, coro) -> None:
         if self._loop:
             asyncio.run_coroutine_threadsafe(coro, self._loop)
 
-    async def _update_progress(self, download_id: int, progress: float) -> None:
+    async def _update_progress(
+        self,
+        download_id: int,
+        progress: float,
+        playlist_index: int | None,
+        playlist_count: int | None,
+        title: str | None,
+        entry_finished: bool = False,
+    ) -> None:
         async with async_session() as session:
             dl = await session.get(Download, download_id)
-            if dl:
-                dl.progress = progress
-                dl.status = "downloading"
-                await session.commit()
+            if not dl:
+                return
+            dl.progress = progress
+            dl.status = "downloading"
+            if playlist_count and not dl.total_entries:
+                logger.info("download %d: collection detected, %d item(s)", download_id, playlist_count)
+            if playlist_count:
+                dl.total_entries = playlist_count
+            if playlist_index:
+                dl.current_index = playlist_index
+            if title:
+                dl.current_title = title
+            if entry_finished and title:
+                completed = list(dl.completed_items or [])
+                if title not in completed:
+                    completed.append(title)
+                    dl.completed_items = completed
+                    if playlist_count:
+                        logger.info(
+                            "download %d: finished %d/%d - %s",
+                            download_id, len(completed), playlist_count, title,
+                        )
+            await session.commit()
 
     async def _on_success(self, download_id: int, info: dict, owner: str) -> None:
         async with async_session() as session:
@@ -203,6 +275,12 @@ class Downloader:
             if not dl:
                 return
 
+            # "entries" includes an entry per playlist item yt-dlp attempted,
+            # even ones that failed extraction entirely (those come back as
+            # None with ignoreerrors=True) -- count against this, not the
+            # already-filtered list below, so a fully-failed playlist reports
+            # "8 entries attempted" instead of a misleading "0".
+            attempted_count = len(info["entries"]) if "entries" in info else 1
             items = [
                 item
                 for entry in _iter_downloaded_entries(info)
@@ -216,6 +294,10 @@ class Downloader:
                 # still returns a truthy top-level `info` -- without this
                 # check that gets recorded as "done" despite nothing actually
                 # landing on disk.
+                logger.error(
+                    "download %d: no files were successfully downloaded (%d entries attempted)",
+                    download_id, attempted_count,
+                )
                 dl.status = "error"
                 dl.error = "no files were successfully downloaded"
                 dl.finished_at = datetime.utcnow()
@@ -227,11 +309,21 @@ class Downloader:
             dl.finished_at = datetime.utcnow()
             dl.title = info.get("title")
             dl.platform = info.get("extractor")
+            dl.current_title = None
 
             for item in items:
                 session.add(item)
 
             await session.commit()
+
+            skipped = attempted_count - len(items)
+            if skipped:
+                logger.warning(
+                    "download %d done: %d item(s) saved, %d skipped (see prior warnings)",
+                    download_id, len(items), skipped,
+                )
+            else:
+                logger.info("download %d done: %d item(s) saved", download_id, len(items))
 
     def _build_media_item(
         self, entry: dict, owner: str, download_id: int, fallback_url: str
@@ -243,6 +335,10 @@ class Downloader:
         # `.part` file after a mid-transfer failure) -- checking existence
         # of the real, final path is what actually proves a file landed.
         if not abs_path or not Path(abs_path).exists():
+            logger.warning(
+                "download %d: entry %r produced no file, skipping",
+                download_id, entry.get("title") or entry.get("webpage_url") or fallback_url,
+            )
             return None
         # Normalise away double slashes that arise when optional template
         # components (e.g. playlist) are absent and evaluate to "".
@@ -276,6 +372,7 @@ class Downloader:
                 dl.status = "error"
                 dl.error = error
                 dl.finished_at = datetime.utcnow()
+                dl.current_title = None
                 await session.commit()
 
 
@@ -302,6 +399,12 @@ async def recover_interrupted() -> None:
             dl.status = "queued"
             dl.progress = 0.0
             dl.error = None
+            # force=True below discards any partial file, so a fresh run also
+            # starts a fresh playlist position rather than showing stale counts.
+            dl.current_index = None
+            dl.total_entries = None
+            dl.current_title = None
+            dl.completed_items = None
         await session.commit()
         rows = [(dl.id, dl.url, dl.owner) for dl in stuck]
 

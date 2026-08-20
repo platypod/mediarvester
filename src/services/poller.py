@@ -86,7 +86,8 @@ async def _label_source(source: Source) -> None:
     cookies = get_cookies_path(source.owner)
     try:
         info = await loop.run_in_executor(None, lambda: _extract_flat(source.url, cookies))
-    except Exception:
+    except Exception as exc:
+        logger.debug("could not label source %d: %s", source.id, exc)
         return
     if info:
         source.label = info.get("title") or info.get("uploader")

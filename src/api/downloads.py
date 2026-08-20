@@ -1,5 +1,7 @@
 import asyncio
+import json
 from datetime import datetime
+from logging import getLogger
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -11,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import get_current_user
 from db import Download, MediaItem, async_session, get_session
 from services.downloader import downloader
+
+logger = getLogger(__name__)
 
 router = APIRouter(prefix="/api/downloads", tags=["downloads"])
 
@@ -31,6 +35,10 @@ class DownloadRead(BaseModel):
     source_id: int | None
     created_at: datetime
     finished_at: datetime | None
+    current_index: int | None
+    total_entries: int | None
+    current_title: str | None
+    completed_items: list[str] | None
 
     model_config = {"from_attributes": True}
 
@@ -106,6 +114,7 @@ async def create_download(
         await session.commit()
         await session.refresh(dl)
         downloader.enqueue(dl.id, dl.url, owner)
+        logger.info("download %d queued by %s: %s", dl.id, owner, dl.url)
         return dl
 
     response.status_code = 200
@@ -136,6 +145,7 @@ async def delete_download(
         raise HTTPException(status_code=404)
     await session.delete(dl)
     await session.commit()
+    logger.info("download %d removed by %s", download_id, owner)
 
 
 @router.get("/{download_id}/progress")
@@ -149,7 +159,15 @@ async def download_progress(
                 row = await session.get(Download, download_id)
             if not row or row.owner != owner:
                 break
-            yield f"data: {{\"progress\":{row.progress:.1f},\"status\":\"{row.status}\"}}\n\n"
+            payload = {
+                "progress": row.progress,
+                "status": row.status,
+                "current_index": row.current_index,
+                "total_entries": row.total_entries,
+                "current_title": row.current_title,
+                "completed_items": row.completed_items,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
             if row.status in ("done", "error"):
                 break
             await asyncio.sleep(0.5)
