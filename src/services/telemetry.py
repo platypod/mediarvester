@@ -133,6 +133,12 @@ def _configure_profiling() -> None:
     pyroscope.configure(
         application_name=environ.get("OTEL_SERVICE_NAME", "mediarvester"),
         server_address=server_address,
+        # CPU-only by default. mem_enabled adds heap-allocation sampling via
+        # CPython's own allocator (PyMemAllocatorDomain) -- this profiles
+        # Python-level object allocations, not the glibc arena fragmentation
+        # from native deps (yt-dlp's C libraries etc.) that MALLOC_ARENA_MAX
+        # already addresses; it's a different, complementary layer.
+        mem_enabled=True,
     )
 
 
