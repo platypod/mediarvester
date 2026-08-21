@@ -12,6 +12,12 @@ interface VersionInfo {
   github_url: string
 }
 
+export interface ServiceStatus {
+  degraded: boolean
+  detected_since: string | null
+  recent_failures: number
+}
+
 export const useSettingsStore = defineStore('settings', () => {
   const user = ref<string>('anonymous')
   const cookiesStatus = ref<CookiesStatus>({ has_cookies: false, uploaded_at: null })
@@ -20,6 +26,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const uploadError = ref('')
   const version = ref<string>('dev')
   const githubUrl = ref<string>('https://github.com/platypod/mediarvester')
+  const serviceStatus = ref<ServiceStatus>({ degraded: false, detected_since: null, recent_failures: 0 })
 
   async function fetchMe() {
     const data = await api.get<{ user: string }>('/api/settings/me')
@@ -67,6 +74,14 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
+  async function fetchServiceStatus() {
+    try {
+      serviceStatus.value = await api.get<ServiceStatus>('/api/settings/service-status')
+    } catch {
+      // Non-critical — leave the last-known status rather than surfacing an error banner for this.
+    }
+  }
+
   return {
     user,
     cookiesStatus,
@@ -75,9 +90,11 @@ export const useSettingsStore = defineStore('settings', () => {
     uploadError,
     version,
     githubUrl,
+    serviceStatus,
     fetchMe,
     fetchCookiesStatus,
     fetchVersion,
+    fetchServiceStatus,
     uploadCookies,
   }
 })

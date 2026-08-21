@@ -155,18 +155,20 @@ class Downloader:
             # content needs -- mweb doesn't remove that requirement, it just
             # means most public videos no longer depend on cookie freshness.
             "extractor_args": {"youtube": {"player_client": ["mweb"]}},
-            # As of 2026-08-20, YouTube's "bind GVS PO Token to video ID"
-            # experiment 403s every adaptive/DASH request (video-only or
-            # audio-only itags) through mweb+bgutil, even with a fresh
-            # per-video token -- confirmed empirically against several
-            # videos. The single-file progressive stream (itag 18) isn't
-            # subject to it and still downloads cleanly. Preferring "best"
-            # (progressive) first means we only ever fall through to the
-            # adaptive merge -- and inherit that failure mode -- for the
-            # rare video that has no progressive format at all (e.g. some
-            # live VODs). Quality is capped at progressive's ceiling
-            # (usually 360p) for everything else until this is lifted.
-            "format": "best/bestvideo*+bestaudio",
+            # No explicit "format" override -- yt-dlp's default
+            # (bestvideo*+bestaudio/best) picks full adaptive/HD quality.
+            # 2026-08-20/21 incident: YouTube's "bind GVS PO Token to video
+            # ID" A/B test 403'd every adaptive request through mweb+bgutil;
+            # briefly worked around here by forcing the 360p progressive
+            # stream, which is exactly the quality regression this project
+            # doesn't want to ship. Fixed properly by the pot-provider sidecar
+            # image bump to 1.3.2 (mints tokens from the homepage challenge +
+            # ytcfg -- see stack/values/default/media/mediarvester.yaml and
+            # docs/incidents/2026-08-20-youtube-403-and-oom.md), confirmed to
+            # restore full adaptive downloads. Left un-overridden here so a
+            # future site-side issue surfaces as a visible failure (and the
+            # /api/settings/service-status banner) rather than silently
+            # degrading everyone's quality again.
             # Skip unavailable/age-restricted/private items instead of aborting the whole job.
             # Critical for playlists that mix public and restricted content.
             "ignoreerrors": True,
