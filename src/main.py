@@ -9,19 +9,27 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.downloads import router as downloads_router
-from api.media import router as media_router
-from api.settings import router as settings_router
-from api.sources import router as sources_router
-from db import create_all
-from services.downloader import COOKIES_ROOT, MEDIA_ROOT, downloader, recover_interrupted
-from services.poller import init_scheduler, scheduler
-
 basicConfig(
     level=environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(name)-24s %(levelname)-8s %(message)s",
 )
 logger = getLogger(__name__)
+
+# Must run before `db` is imported anywhere (including transitively, e.g. via
+# the routers/services below) -- SQLAlchemyInstrumentor works by wrapping
+# `create_async_engine` itself, so it has to be active before db.py's
+# module-level `create_async_engine(...)` call executes.
+from services import telemetry  # noqa: E402
+
+telemetry.configure()
+
+from api.downloads import router as downloads_router  # noqa: E402
+from api.media import router as media_router  # noqa: E402
+from api.settings import router as settings_router  # noqa: E402
+from api.sources import router as sources_router  # noqa: E402
+from db import create_all  # noqa: E402
+from services.downloader import COOKIES_ROOT, MEDIA_ROOT, downloader, recover_interrupted  # noqa: E402
+from services.poller import init_scheduler, scheduler  # noqa: E402
 
 # Applied once, process-wide, before any directory/file is created (by us or by
 # yt-dlp internally) — matches the UMASK the *arr apps get via PUID/PGID/UMASK,
@@ -48,6 +56,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="mediarvester", lifespan=lifespan)
+telemetry.instrument_app(app)
 
 app.include_router(downloads_router)
 app.include_router(sources_router)

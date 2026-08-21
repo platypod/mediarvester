@@ -262,6 +262,10 @@ In production, FastAPI serves the built `frontend/dist/` as static files under `
 | `LOG_LEVEL` | `INFO` | Python logging level |
 | `UVICORN_HOST` | `0.0.0.0` | |
 | `UVICORN_PORT` | `8080` | |
+| `OTEL_SERVICE_NAME` | `mediarvester` | Standard OTel env var — see `services/telemetry.py` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | _(unset)_ | OTLP gRPC target for traces/metrics; unset = exporters idle (no network activity), not a crash |
+| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | _(unset)_ | Must be `cumulative` for a Mimir-backed collector — it rejects delta payloads |
+| `PYROSCOPE_SERVER_ADDRESS` | _(unset)_ | Continuous-profiling backend (not OTLP — see telemetry.py's docstring); unset = profiling disabled |
 
 ---
 

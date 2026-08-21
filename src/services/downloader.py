@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from logging import getLogger
@@ -8,15 +9,34 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
+from opentelemetry.metrics import Observation
+from opentelemetry.trace import Status, StatusCode
 
 from db import Download, MediaItem, async_session
 from services.episode_naming import resolve_episode
+from services.telemetry import meter, propagate_context, tracer
 
 logger = getLogger(__name__)
 
 MEDIA_ROOT = environ.get("MEDIA_ROOT", "/app/downloads")
 COOKIES_ROOT = environ.get("COOKIES_ROOT", "/app/cookies")
 CONCURRENCY = int(environ.get("DOWNLOAD_CONCURRENCY", "2"))
+
+_downloads_started = meter.create_counter(
+    "mediarvester.download.started", description="Downloads that began running"
+)
+_downloads_completed = meter.create_counter(
+    "mediarvester.download.completed", description="Downloads that reached a terminal state"
+)
+_download_duration = meter.create_histogram(
+    "mediarvester.download.duration", unit="s", description="Wall-clock time from start to terminal state"
+)
+_download_retries = meter.create_counter(
+    "mediarvester.download.retry", description="Auto-retries scheduled after a failed item"
+)
+_downloads_active = meter.create_up_down_counter(
+    "mediarvester.download.active", description="Downloads currently running (bounded by DOWNLOAD_CONCURRENCY)"
+)
 
 # How many times a failed item gets automatically requeued before we give up
 # on it for good, and how long to wait before each attempt -- long enough
@@ -223,43 +243,65 @@ class Downloader:
         force: bool = False,
         folder_hint: str | None = None,
     ) -> None:
-        self._executor.submit(self._run, download_id, url, owner, force, folder_hint)
+        self._executor.submit(propagate_context(self._run), download_id, url, owner, force, folder_hint)
 
     def _run(
         self, download_id: int, url: str, owner: str, force: bool = False, folder_hint: str | None = None
     ) -> None:
         logger.info("download %d starting: %s", download_id, url)
 
-        playlist_items = None
-        if is_probably_collection_url(url):
-            try:
-                entries = extract_flat_entries(url, owner)
-            except Exception as exc:
-                logger.warning(
-                    "download %d: could not pre-list collection for ordering, "
-                    "falling back to the platform's own order: %s",
-                    download_id, exc,
-                )
-                entries = None
-            if entries:
-                playlist_items, position_map = _ordered_playlist_items(entries)
-                self._index_maps[download_id] = position_map
+        is_collection = is_probably_collection_url(url)
+        started_at = time.monotonic()
+        _downloads_started.add(1, {"is_collection": is_collection})
+        _downloads_active.add(1)
+        status = "error"
+        platform = "unknown"
 
-        opts = self._build_opts(download_id, owner, force, playlist_items, folder_hint)
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-            if not info:
-                # ignoreerrors makes yt-dlp swallow a total failure on a single
-                # item (e.g. rate-limited/unavailable video) and return None
-                # instead of raising -- don't record that as a success.
-                raise yt_dlp.utils.DownloadError(f"no media extracted for {url}")
-            self._schedule(self._on_success(download_id, info, owner))
-        except Exception as exc:
-            logger.error("download %d failed: %s", download_id, exc)
-            self._schedule(self._on_error(download_id, str(exc)))
-        finally:
-            self._index_maps.pop(download_id, None)
+        with tracer.start_as_current_span("download") as span:
+            span.set_attribute("download_id", download_id)
+            span.set_attribute("owner", owner)
+            span.set_attribute("is_collection", is_collection)
+            span.set_attribute("force", force)
+            try:
+                playlist_items = None
+                if is_collection:
+                    try:
+                        entries = extract_flat_entries(url, owner)
+                    except Exception as exc:
+                        logger.warning(
+                            "download %d: could not pre-list collection for ordering, "
+                            "falling back to the platform's own order: %s",
+                            download_id, exc,
+                        )
+                        entries = None
+                    if entries:
+                        playlist_items, position_map = _ordered_playlist_items(entries)
+                        self._index_maps[download_id] = position_map
+
+                opts = self._build_opts(download_id, owner, force, playlist_items, folder_hint)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                if not info:
+                    # ignoreerrors makes yt-dlp swallow a total failure on a single
+                    # item (e.g. rate-limited/unavailable video) and return None
+                    # instead of raising -- don't record that as a success.
+                    raise yt_dlp.utils.DownloadError(f"no media extracted for {url}")
+                platform = info.get("extractor") or "unknown"
+                status = "done"
+                self._schedule(self._on_success(download_id, info, owner))
+            except Exception as exc:
+                logger.error("download %d failed: %s", download_id, exc)
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
+                self._schedule(self._on_error(download_id, str(exc)))
+            finally:
+                self._index_maps.pop(download_id, None)
+
+        _download_duration.record(
+            time.monotonic() - started_at, {"status": status, "is_collection": is_collection}
+        )
+        _downloads_completed.add(1, {"status": status, "platform": platform})
+        _downloads_active.add(-1)
 
     def _build_opts(
         self,
@@ -612,6 +654,7 @@ class Downloader:
                 download_id, entry.get("title") or retry_url, delay,
                 current_retry_count + 1, _MAX_AUTO_RETRIES,
             )
+            _download_retries.add(1, {"attempt": str(current_retry_count + 1)})
             asyncio.create_task(
                 self._retry_after_delay(
                     retry_url, owner, source_id, current_retry_count + 1, delay, entry.get("title")
@@ -641,6 +684,20 @@ class Downloader:
 
 
 downloader = Downloader()
+
+
+def _observe_queue_depth(options):
+    # Backlog of submitted-but-not-yet-running work against a pool bounded
+    # by DOWNLOAD_CONCURRENCY (default 2) -- non-zero for any length of time
+    # means downloads are piling up faster than they can run.
+    yield Observation(downloader._executor._work_queue.qsize())
+
+
+meter.create_observable_gauge(
+    "mediarvester.download.queue_depth",
+    callbacks=[_observe_queue_depth],
+    description="Downloads submitted but not yet running",
+)
 
 
 async def recover_interrupted() -> None:

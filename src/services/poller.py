@@ -5,22 +5,40 @@ from urllib.parse import urlparse
 
 import yt_dlp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
+from sqlalchemy import func, select
 from yt_dlp.utils import RejectedVideoReached
 
 from db import Download, MediaItem, Source, async_session
 from services.downloader import downloader, extract_flat_entries, get_cookies_path, is_probably_collection_url
+from services.service_status import compute_service_status
+from services.telemetry import create_cached_gauge, meter, propagate_context, tracer
 
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 
+_polls = meter.create_counter("mediarvester.poller.poll", description="Source polls, by outcome")
+_new_entries = meter.create_counter(
+    "mediarvester.poller.new_entries", description="New entries discovered across all polls"
+)
+_playlist_matches = meter.create_counter(
+    "mediarvester.poller.playlist_match",
+    description="Folder-placement lookups for newly-discovered videos, by whether a known playlist matched",
+)
+
 
 async def poll_source(source_id: int) -> None:
+    with tracer.start_as_current_span("poll_source") as span:
+        span.set_attribute("source_id", source_id)
+        await _poll_source(source_id, span)
+
+
+async def _poll_source(source_id: int, span) -> None:
     async with async_session() as session:
         source = await session.get(Source, source_id)
         if not source or not source.enabled:
             return
+        span.set_attribute("owner", source.owner)
 
         logger.info("polling source %d: %s", source_id, source.url)
 
@@ -32,18 +50,24 @@ async def poll_source(source_id: int) -> None:
         try:
             loop = asyncio.get_event_loop()
             entries, poll_error = await loop.run_in_executor(
-                None, lambda: _new_entries_since(source.url, source.include_shorts, cutoff_ts, cookies)
+                None,
+                propagate_context(
+                    lambda: _new_entries_since(source.url, source.include_shorts, cutoff_ts, cookies)
+                ),
             )
         except Exception as exc:
             logger.error("failed to fetch source %d: %s", source_id, exc)
             source.last_polled_at = datetime.utcnow()
             source.last_poll_error = str(exc)
             await session.commit()
+            _polls.add(1, {"result": "error"})
             return
 
         if poll_error:
             logger.warning("source %d poll degraded: %s", source_id, poll_error)
         source.last_poll_error = poll_error
+        _polls.add(1, {"result": "degraded" if poll_error else "ok"})
+        _new_entries.add(len(entries))
 
         for entry in entries:
             url = entry.get("webpage_url") or entry.get("url")
@@ -122,21 +146,27 @@ async def _matching_known_playlist(session, owner: str, entry: dict) -> str | No
     if not candidates:
         return None
 
-    loop = asyncio.get_event_loop()
-    for playlist_url, playlist_title in candidates:
-        try:
-            members = await loop.run_in_executor(None, extract_flat_entries, playlist_url, owner)
-        except Exception as exc:
-            logger.debug(
-                "could not check whether %s belongs to known playlist %s: %s", video_id, playlist_url, exc
-            )
-            continue
-        if members and any((member or {}).get("id") == video_id for member in members):
-            logger.info(
-                "new video %s matches known playlist %r, placing it alongside that playlist",
-                video_id, playlist_title,
-            )
-            return playlist_title
+    with tracer.start_as_current_span("playlist_membership_check") as span:
+        span.set_attribute("candidate_count", len(candidates))
+        loop = asyncio.get_event_loop()
+        for playlist_url, playlist_title in candidates:
+            try:
+                members = await loop.run_in_executor(
+                    None, propagate_context(extract_flat_entries), playlist_url, owner
+                )
+            except Exception as exc:
+                logger.debug(
+                    "could not check whether %s belongs to known playlist %s: %s", video_id, playlist_url, exc
+                )
+                continue
+            if members and any((member or {}).get("id") == video_id for member in members):
+                logger.info(
+                    "new video %s matches known playlist %r, placing it alongside that playlist",
+                    video_id, playlist_title,
+                )
+                _playlist_matches.add(1, {"matched": True})
+                return playlist_title
+        _playlist_matches.add(1, {"matched": False})
     return None
 
 
@@ -144,7 +174,7 @@ async def _label_source(source: Source) -> None:
     loop = asyncio.get_event_loop()
     cookies = get_cookies_path(source.owner)
     try:
-        info = await loop.run_in_executor(None, lambda: _extract_flat(source.url, cookies))
+        info = await loop.run_in_executor(None, propagate_context(lambda: _extract_flat(source.url, cookies)))
     except Exception as exc:
         logger.debug("could not label source %d: %s", source.id, exc)
         return
@@ -325,11 +355,32 @@ def schedule_source(source: Source, run_now: bool = False) -> None:
         )
 
 
+_set_degraded_gauge = create_cached_gauge(
+    "mediarvester.service.degraded", "1 if downloads look site-wide degraded (see service_status.py), else 0"
+)
+_set_media_items_total_gauge = create_cached_gauge(
+    "mediarvester.media_items.total", "Total MediaItem rows across all owners"
+)
+
+
+async def _refresh_gauges() -> None:
+    """Both of these need an async DB query, which an ObservableGauge
+    callback can't do (must be synchronous) -- so this just runs on the
+    same interval as everything else here and pushes fresh values into the
+    cached gauges (services/telemetry.py's create_cached_gauge)."""
+    async with async_session() as session:
+        status = await compute_service_status(session)
+        _set_degraded_gauge(1 if status["degraded"] else 0)
+        total = (await session.execute(select(func.count()).select_from(MediaItem))).scalar_one()
+        _set_media_items_total_gauge(total)
+
+
 async def init_scheduler() -> None:
     async with async_session() as session:
         result = await session.execute(select(Source).where(Source.enabled == True))
         for source in result.scalars().all():
             # Don't run_now on startup — sources already have last_polled_at set
             schedule_source(source, run_now=False)
+    scheduler.add_job(_refresh_gauges, "interval", seconds=60, id="refresh_gauges", next_run_time=datetime.now(timezone.utc))
     scheduler.start()
     logger.info("scheduler started")
