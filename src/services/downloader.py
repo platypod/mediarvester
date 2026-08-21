@@ -456,6 +456,10 @@ class Downloader:
             dl.finished_at = datetime.utcnow()
             dl.title = info.get("title")
             dl.platform = info.get("extractor")
+            # Same fallback chain as the outtmpl folder name below, so
+            # "creator" reflects the same identity the file actually landed
+            # under regardless of which field a given platform populates.
+            dl.creator = info.get("uploader") or info.get("channel") or info.get("creator")
             dl.current_title = None
 
             for item in items:

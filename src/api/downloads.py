@@ -27,6 +27,7 @@ class DownloadRead(BaseModel):
     url: str
     title: str | None
     platform: str | None
+    creator: str | None
     status: str
     progress: float
     error: str | None

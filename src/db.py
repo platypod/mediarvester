@@ -26,6 +26,11 @@ class Download(Base):
     url: Mapped[str]
     title: Mapped[str | None]
     platform: Mapped[str | None]
+    # Same uploader/channel/creator fallback chain used for the outtmpl
+    # folder name (services/downloader.py) -- populated on success, kept as
+    # its own column (rather than parsed back out of local_path) so it's
+    # filterable/queryable without depending on on-disk layout staying put.
+    creator: Mapped[str | None]
     status: Mapped[str] = mapped_column(default="queued")  # queued|downloading|done|error
     progress: Mapped[float] = mapped_column(default=0.0)
     error: Mapped[str | None]
@@ -144,3 +149,10 @@ async def create_all() -> None:
     except (OperationalError, ProgrammingError):
         async with engine.begin() as conn:
             await conn.execute(text("ALTER TABLE download ADD COLUMN retry_at TIMESTAMP"))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT creator FROM download LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE download ADD COLUMN creator TEXT"))

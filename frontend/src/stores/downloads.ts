@@ -7,6 +7,7 @@ export interface Download {
   url: string
   title: string | null
   platform: string | null
+  creator: string | null
   status: 'queued' | 'downloading' | 'done' | 'error'
   progress: number
   error: string | null
