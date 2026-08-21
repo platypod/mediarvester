@@ -18,6 +18,7 @@ export interface Download {
   current_title: string | null
   completed_items: string[] | null
   retry_count: number
+  retry_at: string | null
 }
 
 export const useDownloadsStore = defineStore('downloads', () => {

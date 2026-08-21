@@ -13,6 +13,10 @@ const statusClass: Record<string, string> = {
   done: 'bg-green-900/60 text-green-300',
   error: 'bg-red-900/60 text-red-300',
 }
+
+function formatTime(iso: string): string {
+  return new Date(iso + 'Z').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
 </script>
 
 <template>
@@ -41,6 +45,15 @@ const statusClass: Record<string, string> = {
           {{ download.url }}
         </p>
         <p v-if="download.error" class="text-xs text-red-400 mt-1">{{ download.error }}</p>
+        <p v-if="download.status === 'error'" class="text-xs mt-0.5">
+          <span v-if="download.retry_at" class="text-gray-500">
+            Will retry automatically around {{ formatTime(download.retry_at) }} — nothing to do.
+          </span>
+          <span v-else class="text-orange-400">
+            Gave up after {{ download.retry_count + 1 }} attempt{{ download.retry_count > 0 ? 's' : '' }} —
+            resubmit the URL to try again.
+          </span>
+        </p>
       </div>
       <button
         class="text-gray-600 hover:text-red-400 transition-colors flex-shrink-0 text-lg leading-none"

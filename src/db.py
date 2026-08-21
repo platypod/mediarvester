@@ -46,6 +46,13 @@ class Download(Base):
     # Download row with this incremented, so retries stay visible/queryable
     # in their own right instead of mutating history in place.
     retry_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Set on a failed row exactly when an auto-retry has actually been
+    # scheduled for it (i.e. retry_count hadn't yet hit the cap) -- lets the
+    # UI say "will retry automatically around HH:MM" instead of leaving a
+    # bare "error" that looks like it needs the user to do something. None
+    # (rather than some fixed cutoff) is what distinguishes "still being
+    # handled" from "gave up for good, resubmit manually if you want it".
+    retry_at: Mapped[datetime | None]
 
 
 class Source(Base):
@@ -130,3 +137,10 @@ async def create_all() -> None:
             await conn.execute(
                 text("ALTER TABLE download ADD COLUMN retry_count INTEGER DEFAULT 0")
             )
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT retry_at FROM download LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE download ADD COLUMN retry_at TIMESTAMP"))

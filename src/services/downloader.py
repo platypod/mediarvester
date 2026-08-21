@@ -1,7 +1,7 @@
 import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from logging import getLogger
 from os import environ
 from pathlib import Path
@@ -446,6 +446,7 @@ class Downloader:
                 dl.status = "error"
                 dl.error = "no files were successfully downloaded"
                 dl.finished_at = datetime.utcnow()
+                dl.retry_at = self._compute_retry_at(retry_count)
                 await session.commit()
                 self._schedule_retries(download_id, failed_entries, owner, source_id, retry_count)
                 return
@@ -516,18 +517,34 @@ class Downloader:
         async with async_session() as session:
             dl = await session.get(Download, download_id)
             if dl:
+                # dl.title is only ever set on success, but a title may still
+                # be known from a progress event that arrived before the
+                # eventual failure (e.g. it started downloading, then failed
+                # mid-transfer) -- worth keeping for the retry row below
+                # rather than always falling back to a bare URL.
+                title = dl.title or dl.current_title
                 dl.status = "error"
                 dl.error = error
                 dl.finished_at = datetime.utcnow()
                 dl.current_title = None
+                dl.retry_at = self._compute_retry_at(dl.retry_count)
                 await session.commit()
                 self._schedule_retries(
                     download_id,
-                    [{"webpage_url": dl.url, "title": dl.title}],
+                    [{"webpage_url": dl.url, "title": title}],
                     dl.owner,
                     dl.source_id,
                     dl.retry_count,
                 )
+
+    def _compute_retry_at(self, current_retry_count: int) -> datetime | None:
+        """None means "no further auto-retry will happen" -- either it's
+        about to be scheduled fresh (caller checks the cap itself in
+        _schedule_retries) or the cap's already been hit. Kept as its own
+        method so both failure paths above compute this identically."""
+        if current_retry_count >= _MAX_AUTO_RETRIES:
+            return None
+        return datetime.utcnow() + timedelta(seconds=_RETRY_DELAYS_SECONDS[current_retry_count])
 
     def _schedule_retries(
         self,
@@ -564,15 +581,26 @@ class Downloader:
                 current_retry_count + 1, _MAX_AUTO_RETRIES,
             )
             asyncio.create_task(
-                self._retry_after_delay(retry_url, owner, source_id, current_retry_count + 1, delay)
+                self._retry_after_delay(
+                    retry_url, owner, source_id, current_retry_count + 1, delay, entry.get("title")
+                )
             )
 
     async def _retry_after_delay(
-        self, url: str, owner: str, source_id: int | None, retry_count: int, delay: float
+        self,
+        url: str,
+        owner: str,
+        source_id: int | None,
+        retry_count: int,
+        delay: float,
+        title: str | None = None,
     ) -> None:
         await asyncio.sleep(delay)
         async with async_session() as session:
-            dl = Download(url=url, owner=owner, source_id=source_id, retry_count=retry_count)
+            # Carrying the already-known title over means a retry row shows
+            # something better than a bare URL immediately, rather than
+            # waiting on this attempt to also succeed before it has one.
+            dl = Download(url=url, owner=owner, source_id=source_id, retry_count=retry_count, title=title)
             session.add(dl)
             await session.commit()
             await session.refresh(dl)

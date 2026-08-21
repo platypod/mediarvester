@@ -39,6 +39,7 @@ class DownloadRead(BaseModel):
     current_title: str | None
     completed_items: list[str] | None
     retry_count: int
+    retry_at: datetime | None
 
     model_config = {"from_attributes": True}
 
