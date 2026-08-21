@@ -9,7 +9,7 @@ from sqlalchemy import select
 from yt_dlp.utils import RejectedVideoReached
 
 from db import Download, MediaItem, Source, async_session
-from services.downloader import downloader, get_cookies_path
+from services.downloader import downloader, extract_flat_entries, get_cookies_path, is_probably_collection_url
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +71,73 @@ async def poll_source(source_id: int) -> None:
             if already_media:
                 continue
 
-            dl = Download(url=url, source_id=source_id, owner=source.owner)
+            folder_hint = await _matching_known_playlist(session, source.owner, entry)
+
+            dl = Download(url=url, source_id=source_id, owner=source.owner, folder_hint=folder_hint)
             session.add(dl)
             await session.flush()
-            downloader.enqueue(dl.id, url, source.owner)
+            downloader.enqueue(dl.id, url, source.owner, folder_hint=folder_hint)
             logger.info("enqueued download %d for %s", dl.id, url)
 
         source.last_polled_at = datetime.utcnow()
         await session.commit()
+
+
+async def _matching_known_playlist(session, owner: str, entry: dict) -> str | None:
+    """If `entry` (a newly-discovered video from a followed creator) is
+    already part of a playlist this owner has previously downloaded in
+    full, return that playlist's title so the new video can join it in the
+    library instead of landing loose in the creator's flat root folder --
+    see services/downloader.py's `folder_hint`.
+
+    A followed *channel* has no notion of "this upload also belongs to
+    playlist X" on its own -- that's not a property of the video, only
+    discoverable by walking the playlist itself. So this only fires, and
+    only costs anything, when the creator has at least one completed
+    collection download on record; it stops at the first match rather than
+    checking every known playlist.
+    """
+    video_id = entry.get("id")
+    creator = entry.get("uploader") or entry.get("channel") or entry.get("creator")
+    if not video_id or not creator:
+        return None
+
+    result = await session.execute(
+        select(Download.url, Download.title)
+        .where(Download.owner == owner)
+        .where(Download.creator == creator)
+        .where(Download.status == "done")
+        .order_by(Download.finished_at.desc())
+        .limit(20)
+    )
+    seen_urls: set[str] = set()
+    candidates: list[tuple[str, str]] = []
+    for playlist_url, playlist_title in result.all():
+        if not playlist_title or playlist_url in seen_urls:
+            continue
+        if not is_probably_collection_url(playlist_url):
+            continue
+        seen_urls.add(playlist_url)
+        candidates.append((playlist_url, playlist_title))
+    if not candidates:
+        return None
+
+    loop = asyncio.get_event_loop()
+    for playlist_url, playlist_title in candidates:
+        try:
+            members = await loop.run_in_executor(None, extract_flat_entries, playlist_url, owner)
+        except Exception as exc:
+            logger.debug(
+                "could not check whether %s belongs to known playlist %s: %s", video_id, playlist_url, exc
+            )
+            continue
+        if members and any((member or {}).get("id") == video_id for member in members):
+            logger.info(
+                "new video %s matches known playlist %r, placing it alongside that playlist",
+                video_id, playlist_title,
+            )
+            return playlist_title
+    return None
 
 
 async def _label_source(source: Source) -> None:

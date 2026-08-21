@@ -58,6 +58,13 @@ class Download(Base):
     # (rather than some fixed cutoff) is what distinguishes "still being
     # handled" from "gave up for good, resubmit manually if you want it".
     retry_at: Mapped[datetime | None]
+    # Set by the poller (services/poller.py) when a newly-discovered video
+    # from a followed creator matches an already-downloaded playlist --
+    # overrides the outtmpl's playlist-folder segment so it lands alongside
+    # that playlist's other episodes instead of loose in the creator's root.
+    # Persisted (not just passed at enqueue time) so a restart's
+    # recover_interrupted can honour it on re-enqueue too.
+    folder_hint: Mapped[str | None]
 
 
 class Source(Base):
@@ -156,3 +163,10 @@ async def create_all() -> None:
     except (OperationalError, ProgrammingError):
         async with engine.begin() as conn:
             await conn.execute(text("ALTER TABLE download ADD COLUMN creator TEXT"))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT folder_hint FROM download LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE download ADD COLUMN folder_hint TEXT"))

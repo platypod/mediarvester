@@ -99,12 +99,15 @@ def _iter_downloaded_entries(info: dict) -> list[dict]:
     return [info]
 
 
-def _extract_flat_entries(url: str, owner: str) -> list[dict] | None:
-    """Cheap, download-free listing of a collection's entries, used only to
-    compute download order (see `_ordered_playlist_items`) before the real
-    download starts. Returns None when yt-dlp reports no `entries` at all --
-    i.e. `url` wasn't actually a collection, so callers should skip the
-    reordering step entirely rather than treat an empty list as "0 items"."""
+def extract_flat_entries(url: str, owner: str) -> list[dict] | None:
+    """Cheap, download-free listing of a collection's entries. Shared by two
+    callers: computing download order before a collection download starts
+    (see `_ordered_playlist_items`), and the poller checking whether a newly
+    discovered video belongs to an already-downloaded playlist (see
+    poller.py's `_known_playlist_urls` / folder_hint). Returns None when
+    yt-dlp reports no `entries` at all -- i.e. `url` wasn't actually a
+    collection, so callers should skip whatever they were about to do with
+    it rather than treat an empty list as "0 items"."""
     opts = {
         "js_runtimes": {"node": {}},
         "extractor_args": {"youtube": {"player_client": ["mweb"]}},
@@ -212,16 +215,25 @@ class Downloader:
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
-    def enqueue(self, download_id: int, url: str, owner: str = "anonymous", force: bool = False) -> None:
-        self._executor.submit(self._run, download_id, url, owner, force)
+    def enqueue(
+        self,
+        download_id: int,
+        url: str,
+        owner: str = "anonymous",
+        force: bool = False,
+        folder_hint: str | None = None,
+    ) -> None:
+        self._executor.submit(self._run, download_id, url, owner, force, folder_hint)
 
-    def _run(self, download_id: int, url: str, owner: str, force: bool = False) -> None:
+    def _run(
+        self, download_id: int, url: str, owner: str, force: bool = False, folder_hint: str | None = None
+    ) -> None:
         logger.info("download %d starting: %s", download_id, url)
 
         playlist_items = None
         if is_probably_collection_url(url):
             try:
-                entries = _extract_flat_entries(url, owner)
+                entries = extract_flat_entries(url, owner)
             except Exception as exc:
                 logger.warning(
                     "download %d: could not pre-list collection for ordering, "
@@ -233,7 +245,7 @@ class Downloader:
                 playlist_items, position_map = _ordered_playlist_items(entries)
                 self._index_maps[download_id] = position_map
 
-        opts = self._build_opts(download_id, owner, force, playlist_items)
+        opts = self._build_opts(download_id, owner, force, playlist_items, folder_hint)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -250,8 +262,24 @@ class Downloader:
             self._index_maps.pop(download_id, None)
 
     def _build_opts(
-        self, download_id: int, owner: str, force: bool = False, playlist_items: str | None = None
+        self,
+        download_id: int,
+        owner: str,
+        force: bool = False,
+        playlist_items: str | None = None,
+        folder_hint: str | None = None,
     ) -> dict:
+        # A folder_hint (set by the poller when a newly-discovered video
+        # matches an already-downloaded playlist -- see poller.py) replaces
+        # the %(playlist_title,playlist|)s segment with a fixed literal,
+        # since a lone video URL carries no playlist context of its own for
+        # yt-dlp to resolve there. "%" is yt-dlp's own template escape and
+        # "/" would otherwise inject an extra path level, so both are
+        # neutralised the same way _apply_episode_prefix already sanitises
+        # titles for the filesystem.
+        playlist_segment = (
+            folder_hint.replace("%", "%%").replace("/", "-") if folder_hint else "%(playlist_title,playlist|)s"
+        )
         opts: dict = {
             # Use Node.js for YouTube's n-challenge (requires yt-dlp-ejs + Node 22+).
             # yt-dlp defaults to deno-only; node must be explicitly enabled.
@@ -294,7 +322,7 @@ class Downloader:
             "outtmpl": (
                 f"{MEDIA_ROOT}"
                 "/%(uploader,channel,creator|Unsorted)s"
-                "/%(playlist_title,playlist|)s"
+                f"/{playlist_segment}"
                 "/%(title)s.%(ext)s"
             ),
             "writeinfojson": True,
@@ -642,10 +670,10 @@ async def recover_interrupted() -> None:
             dl.current_title = None
             dl.completed_items = None
         await session.commit()
-        rows = [(dl.id, dl.url, dl.owner) for dl in stuck]
+        rows = [(dl.id, dl.url, dl.owner, dl.folder_hint) for dl in stuck]
 
-    for download_id, url, owner in rows:
-        downloader.enqueue(download_id, url, owner, force=True)
+    for download_id, url, owner, folder_hint in rows:
+        downloader.enqueue(download_id, url, owner, force=True, folder_hint=folder_hint)
         logger.info("recovered interrupted download %d: %s", download_id, url)
 
     if rows:
