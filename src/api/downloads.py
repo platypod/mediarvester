@@ -143,6 +143,12 @@ async def delete_download(
     dl = await session.get(Download, download_id)
     if not dl or dl.owner != owner:
         raise HTTPException(status_code=404)
+    media_items = (
+        await session.execute(select(MediaItem).where(MediaItem.download_id == download_id))
+    ).scalars().all()
+    for item in media_items:
+        await session.delete(item)
+    await session.flush()
     await session.delete(dl)
     await session.commit()
     logger.info("download %d removed by %s", download_id, owner)
