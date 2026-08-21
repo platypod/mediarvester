@@ -26,6 +26,13 @@ const statusClass: Record<string, string> = {
           <span class="text-xs px-2 py-0.5 rounded font-medium" :class="statusClass[download.status]">
             {{ download.status }}
           </span>
+          <span
+            v-if="download.retry_count > 0"
+            class="text-xs bg-orange-900/60 text-orange-300 px-2 py-0.5 rounded"
+            title="Auto-retried after a previous failure"
+          >
+            retry {{ download.retry_count }}
+          </span>
         </div>
         <p class="text-gray-100 text-sm truncate font-medium">
           {{ download.title ?? download.url }}

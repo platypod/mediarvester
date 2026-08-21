@@ -40,6 +40,12 @@ class Download(Base):
     total_entries: Mapped[int | None]
     current_title: Mapped[str | None]
     completed_items: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # How many times this URL has already been auto-retried after a failure
+    # (see services/downloader.py's _schedule_retries). 0 for a fresh,
+    # user- or poller-initiated download; each auto-retry spawns a new
+    # Download row with this incremented, so retries stay visible/queryable
+    # in their own right instead of mutating history in place.
+    retry_count: Mapped[int] = mapped_column(default=0, server_default="0")
 
 
 class Source(Base):
@@ -115,3 +121,12 @@ async def create_all() -> None:
             await conn.execute(text("ALTER TABLE download ADD COLUMN total_entries INTEGER"))
             await conn.execute(text("ALTER TABLE download ADD COLUMN current_title TEXT"))
             await conn.execute(text("ALTER TABLE download ADD COLUMN completed_items JSON"))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT retry_count FROM download LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("ALTER TABLE download ADD COLUMN retry_count INTEGER DEFAULT 0")
+            )

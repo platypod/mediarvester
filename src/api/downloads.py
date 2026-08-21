@@ -2,7 +2,6 @@ import asyncio
 import json
 from datetime import datetime
 from logging import getLogger
-from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
@@ -12,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user
 from db import Download, MediaItem, async_session, get_session
-from services.downloader import downloader
+from services.downloader import downloader, is_probably_collection_url
 
 logger = getLogger(__name__)
 
@@ -39,24 +38,9 @@ class DownloadRead(BaseModel):
     total_entries: int | None
     current_title: str | None
     completed_items: list[str] | None
+    retry_count: int
 
     model_config = {"from_attributes": True}
-
-
-def _is_probably_collection_url(url: str) -> bool:
-    parsed = urlparse(url)
-    path = parsed.path.rstrip("/").lower()
-    query = parse_qs(parsed.query)
-
-    if "list" in query:
-        return True
-    if path.endswith("/playlist"):
-        return True
-    if path.endswith(("/videos", "/shorts", "/streams")):
-        return True
-    if path.startswith(("/channel/", "/user/", "/c/", "/@")):
-        return True
-    return False
 
 
 @router.post("", response_model=DownloadRead, status_code=201)
@@ -66,7 +50,7 @@ async def create_download(
     owner: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    is_collection = _is_probably_collection_url(body.url)
+    is_collection = is_probably_collection_url(body.url)
 
     # Never queue the same URL twice concurrently for one owner.
     existing = (

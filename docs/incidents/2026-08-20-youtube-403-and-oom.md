@@ -137,3 +137,53 @@ upstream fix landing or YouTube ending an A/B test, neither of which is on
 a knowable schedule. Promising a specific time would just be fabricated.
 "First noticed around HH:MM" is the one honest, useful data point, plus a
 count and a suggestion to retry later or resubmit the failed download.
+
+## Follow-up, same day: real YouTube rate limit + two product gaps it exposed
+
+After the quality fix, the three MrDeriv playlists were deleted (92 files,
+360p, worth ~47 GB) and resubmitted to get them at full quality. This
+tripped a genuine YouTube-side rate limit — *"Your account has been
+rate-limited by YouTube for up to an hour"* — almost certainly from the
+day's cumulative testing (multiple full playlist runs, in-pod exec tests,
+local reproduction runs, all against the same account/IP in a short window).
+Across the three re-runs: 23/93 videos saved before the limit started
+biting, the remaining 70 skipped.
+
+This wasn't a bug, but it exposed two real product gaps, fixed here instead
+of manually chasing the missing 70 videos:
+
+1. **Download order was whatever the platform returned**, not necessarily
+   chronological. The Kingdom Come playlist came back newest-first (episode
+   14 before episode 1) — so even on a clean run, watching from episode 1
+   meant waiting for the entire playlist first. Fixed in
+   [`services/downloader.py`](../../src/services/downloader.py)
+   (`_ordered_playlist_items`): a cheap flat-metadata pre-pass resolves each
+   entry's episode number (reusing the same heuristic already trusted for
+   on-disk renaming, `episode_naming.resolve_episode`) and builds an
+   explicit yt-dlp `playlist_items` spec in that order. Verified against
+   yt-dlp's own `PlaylistEntries.get_requested_items` that it downloads in
+   exactly the order given, not re-sorted — so this reuses the existing
+   single-download-call flow rather than requiring a bigger restructure.
+
+2. **A failed item just... stayed failed.** `status: "done"` is terminal —
+   nothing revisits a skipped entry later, and re-running the same
+   playlist URL would re-touch every already-successful entry too (a real,
+   separate rough edge — no dedupe check exists before creating a new
+   `MediaItem` row for an entry that already has one, which would double up
+   the library). Fixed with automatic requeuing: every entry that fails to
+   produce a file (or a whole single-video download that fails outright)
+   gets its own fresh `Download` row scheduled after a delay (2min / 10min /
+   30min for the 1st/2nd/3rd attempt), capped at 3 auto-retries so a
+   genuinely broken video doesn't retry forever. Each retry is a normal,
+   visible queue entry (`retry_count > 0`, shown as a badge) rather than
+   mutating history in place. Verified offline (no network) against a
+   throwaway SQLite DB: confirmed the first retry creates a correctly
+   incremented row, and that a chain of repeated failures stops at exactly
+   3 retries with no further rows.
+
+**Deliberately not done:** manually re-fetching the 70 still-missing
+videos from today's incident. The rate limit was still active and
+resubmitting immediately would just fail again; the fix that matters is
+that *future* failures — including a retry of these same videos, whenever
+someone resubmits — now requeue themselves automatically instead of
+silently staying gone.

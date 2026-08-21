@@ -5,6 +5,7 @@ from datetime import datetime
 from logging import getLogger
 from os import environ
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
 
@@ -16,6 +17,33 @@ logger = getLogger(__name__)
 MEDIA_ROOT = environ.get("MEDIA_ROOT", "/app/downloads")
 COOKIES_ROOT = environ.get("COOKIES_ROOT", "/app/cookies")
 CONCURRENCY = int(environ.get("DOWNLOAD_CONCURRENCY", "2"))
+
+# How many times a failed item gets automatically requeued before we give up
+# on it for good, and how long to wait before each attempt -- long enough
+# that a transient site-side issue (rate limiting, a PO Token hiccup) has a
+# real chance to clear rather than immediately re-tripping the same limit.
+_MAX_AUTO_RETRIES = 3
+_RETRY_DELAYS_SECONDS = [120, 600, 1800]  # 2min, 10min, 30min
+
+
+def is_probably_collection_url(url: str) -> bool:
+    """Shared with api/downloads.py (dedupe policy) -- also gates the
+    playlist-ordering pre-pass below, since that only makes sense for a
+    collection URL and would just be a wasted extra request for a plain
+    video link."""
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/").lower()
+    query = parse_qs(parsed.query)
+
+    if "list" in query:
+        return True
+    if path.endswith("/playlist"):
+        return True
+    if path.endswith(("/videos", "/shorts", "/streams")):
+        return True
+    if path.startswith(("/channel/", "/user/", "/c/", "/@")):
+        return True
+    return False
 
 
 class _YtDlpLogAdapter:
@@ -71,6 +99,66 @@ def _iter_downloaded_entries(info: dict) -> list[dict]:
     return [info]
 
 
+def _extract_flat_entries(url: str, owner: str) -> list[dict] | None:
+    """Cheap, download-free listing of a collection's entries, used only to
+    compute download order (see `_ordered_playlist_items`) before the real
+    download starts. Returns None when yt-dlp reports no `entries` at all --
+    i.e. `url` wasn't actually a collection, so callers should skip the
+    reordering step entirely rather than treat an empty list as "0 items"."""
+    opts = {
+        "js_runtimes": {"node": {}},
+        "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+        "extract_flat": True,
+        "ignoreerrors": True,
+        "quiet": True,
+    }
+    if cookies := get_cookies_path(owner):
+        opts["cookiefile"] = cookies
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False) or {}
+    return info.get("entries")
+
+
+def _ordered_playlist_items(entries: list[dict]) -> tuple[str, dict[int, int]]:
+    """Compute a yt-dlp `playlist_items` spec that downloads entries in
+    ascending episode order instead of whatever order the platform returns
+    them in -- a creator's "newest first" playlist would otherwise download
+    the finale before episode 1, forcing a full-playlist wait before there's
+    anything watchable. Reuses the same episode-number heuristic already
+    trusted for on-disk renaming (episode_naming.resolve_episode); entries
+    with no resolvable number fall back to their original position, so they
+    sort in amongst the numbered ones roughly where the platform put them
+    rather than all clumping at one end.
+
+    yt-dlp processes `playlist_items` entries in exactly the order given
+    (verified against yt-dlp's own PlaylistEntries.get_requested_items --
+    it's a straight iteration over the parsed spec, not re-sorted), so a
+    comma-separated list of original 1-based indices in our desired order is
+    all that's needed -- no restructuring of the download call itself.
+
+    Returns `(playlist_items_string, position_by_original_index)`: the
+    string for `_build_opts`, and a map from each entry's *original* index
+    (what yt-dlp's progress hook reports as `playlist_index`) to its
+    position in the new order, so the UI can show "N of M in download
+    order" instead of the platform's own numbering.
+    """
+    numbered: list[tuple[int, int]] = []
+    for i, entry in enumerate(entries, start=1):
+        if not entry:
+            continue  # failed extraction entirely; yt-dlp won't attempt it regardless
+        resolved = resolve_episode(entry)
+        number = resolved[0] if resolved else i
+        numbered.append((number, i))
+    numbered.sort()
+
+    playlist_items = ",".join(str(original_index) for _, original_index in numbered)
+    position_by_original_index = {
+        original_index: position
+        for position, (_, original_index) in enumerate(numbered, start=1)
+    }
+    return playlist_items, position_by_original_index
+
+
 def _apply_episode_prefix(abs_path: str, entry: dict) -> str:
     """Rename a just-downloaded file (and its sidecars) to `N - Title.ext`
     when an episode number can be resolved, so the on-disk name is right
@@ -115,6 +203,11 @@ class Downloader:
     def __init__(self) -> None:
         self._executor = ThreadPoolExecutor(max_workers=CONCURRENCY)
         self._loop: asyncio.AbstractEventLoop | None = None
+        # download_id -> {original playlist_index: position in download order}.
+        # Populated in _run before a collection download starts, read by
+        # _progress_hook while it's in flight, and popped once it finishes --
+        # see _ordered_playlist_items for why this exists.
+        self._index_maps: dict[int, dict[int, int]] = {}
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -124,7 +217,23 @@ class Downloader:
 
     def _run(self, download_id: int, url: str, owner: str, force: bool = False) -> None:
         logger.info("download %d starting: %s", download_id, url)
-        opts = self._build_opts(download_id, owner, force)
+
+        playlist_items = None
+        if is_probably_collection_url(url):
+            try:
+                entries = _extract_flat_entries(url, owner)
+            except Exception as exc:
+                logger.warning(
+                    "download %d: could not pre-list collection for ordering, "
+                    "falling back to the platform's own order: %s",
+                    download_id, exc,
+                )
+                entries = None
+            if entries:
+                playlist_items, position_map = _ordered_playlist_items(entries)
+                self._index_maps[download_id] = position_map
+
+        opts = self._build_opts(download_id, owner, force, playlist_items)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -137,8 +246,12 @@ class Downloader:
         except Exception as exc:
             logger.error("download %d failed: %s", download_id, exc)
             self._schedule(self._on_error(download_id, str(exc)))
+        finally:
+            self._index_maps.pop(download_id, None)
 
-    def _build_opts(self, download_id: int, owner: str, force: bool = False) -> dict:
+    def _build_opts(
+        self, download_id: int, owner: str, force: bool = False, playlist_items: str | None = None
+    ) -> dict:
         opts: dict = {
             # Use Node.js for YouTube's n-challenge (requires yt-dlp-ejs + Node 22+).
             # yt-dlp defaults to deno-only; node must be explicitly enabled.
@@ -205,6 +318,8 @@ class Downloader:
             # playlist/channel download, for the same reason.
             "sleep_interval": 2,
         }
+        if playlist_items:
+            opts["playlist_items"] = playlist_items
         if force:
             # Recovery after a restart: an interrupted job may have left a partial
             # `.part` (or a half-written final) file on disk. Don't resume it — its
@@ -229,6 +344,16 @@ class Downloader:
         playlist_index = info.get("playlist_index")
         playlist_count = info.get("playlist_count") or info.get("n_entries")
         title = info.get("title")
+
+        # Translate yt-dlp's *original* playlist position into our chosen
+        # download-order position (see _ordered_playlist_items) so "N of M"
+        # counts up 1, 2, 3... in the order files are actually landing,
+        # rather than jumping around in the platform's own numbering.
+        position_map = self._index_maps.get(download_id)
+        if position_map:
+            playlist_count = len(position_map)
+            if playlist_index in position_map:
+                playlist_index = position_map[playlist_index]
 
         if d["status"] == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -295,11 +420,17 @@ class Downloader:
             # already-filtered list below, so a fully-failed playlist reports
             # "8 entries attempted" instead of a misleading "0".
             attempted_count = len(info["entries"]) if "entries" in info else 1
-            items = [
-                item
-                for entry in _iter_downloaded_entries(info)
-                if (item := self._build_media_item(entry, owner, download_id, dl.url))
-            ]
+            items: list[MediaItem] = []
+            failed_entries: list[dict] = []
+            for entry in _iter_downloaded_entries(info):
+                item = self._build_media_item(entry, owner, download_id, dl.url)
+                if item:
+                    items.append(item)
+                else:
+                    failed_entries.append(entry)
+
+            retry_count = dl.retry_count
+            source_id = dl.source_id
 
             if not items:
                 # ignoreerrors=True means a playlist/channel download where
@@ -316,6 +447,7 @@ class Downloader:
                 dl.error = "no files were successfully downloaded"
                 dl.finished_at = datetime.utcnow()
                 await session.commit()
+                self._schedule_retries(download_id, failed_entries, owner, source_id, retry_count)
                 return
 
             dl.status = "done"
@@ -338,6 +470,7 @@ class Downloader:
                 )
             else:
                 logger.info("download %d done: %d item(s) saved", download_id, len(items))
+            self._schedule_retries(download_id, failed_entries, owner, source_id, retry_count)
 
     def _build_media_item(
         self, entry: dict, owner: str, download_id: int, fallback_url: str
@@ -388,6 +521,63 @@ class Downloader:
                 dl.finished_at = datetime.utcnow()
                 dl.current_title = None
                 await session.commit()
+                self._schedule_retries(
+                    download_id,
+                    [{"webpage_url": dl.url, "title": dl.title}],
+                    dl.owner,
+                    dl.source_id,
+                    dl.retry_count,
+                )
+
+    def _schedule_retries(
+        self,
+        download_id: int,
+        failed_entries: list[dict],
+        owner: str,
+        source_id: int | None,
+        current_retry_count: int,
+    ) -> None:
+        """Requeue every entry that didn't produce a file, after a delay --
+        long enough that a transient site-side issue (rate limiting, a PO
+        Token hiccup) has a real chance to clear rather than immediately
+        re-tripping the same limit. Each retry is its own new Download row
+        (visible in the queue, its own status) rather than silently mutating
+        this one, and gives up for good after _MAX_AUTO_RETRIES so a
+        genuinely broken/unavailable video doesn't retry forever."""
+        if not failed_entries:
+            return
+        if current_retry_count >= _MAX_AUTO_RETRIES:
+            logger.warning(
+                "download %d: giving up on %d failed item(s) after %d retries",
+                download_id, len(failed_entries), current_retry_count,
+            )
+            return
+
+        delay = _RETRY_DELAYS_SECONDS[current_retry_count]
+        for entry in failed_entries:
+            retry_url = entry.get("webpage_url") or entry.get("url")
+            if not retry_url:
+                continue
+            logger.info(
+                "download %d: will retry %r in %ds (attempt %d/%d)",
+                download_id, entry.get("title") or retry_url, delay,
+                current_retry_count + 1, _MAX_AUTO_RETRIES,
+            )
+            asyncio.create_task(
+                self._retry_after_delay(retry_url, owner, source_id, current_retry_count + 1, delay)
+            )
+
+    async def _retry_after_delay(
+        self, url: str, owner: str, source_id: int | None, retry_count: int, delay: float
+    ) -> None:
+        await asyncio.sleep(delay)
+        async with async_session() as session:
+            dl = Download(url=url, owner=owner, source_id=source_id, retry_count=retry_count)
+            session.add(dl)
+            await session.commit()
+            await session.refresh(dl)
+        logger.info("download %d: auto-retry attempt %d for %s", dl.id, retry_count, url)
+        self.enqueue(dl.id, url, owner)
 
 
 downloader = Downloader()
