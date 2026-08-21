@@ -13,6 +13,8 @@ import yt_dlp
 from opentelemetry.metrics import Observation
 from opentelemetry.trace import Status, StatusCode
 
+from sqlalchemy import delete
+
 from db import Download, MediaItem, async_session
 from services.episode_naming import resolve_episode
 from services.telemetry import meter, propagate_context, tracer
@@ -554,6 +556,27 @@ class Downloader:
                 session.add(item)
 
             await session.commit()
+
+            # A resubmit of the same URL just succeeded -- any earlier failed
+            # attempts at it (manual retries or exhausted auto-retries alike)
+            # are no longer telling the truth about the current state, so drop
+            # them instead of leaving stale "error" rows for something that's
+            # actually fine now. Error rows never have MediaItems attached, so
+            # this can't orphan anything.
+            result = await session.execute(
+                delete(Download).where(
+                    Download.url == dl.url,
+                    Download.owner == owner,
+                    Download.status == "error",
+                    Download.id != download_id,
+                )
+            )
+            await session.commit()
+            if result.rowcount:
+                logger.info(
+                    "download %d done: cleared %d stale error row(s) for the same URL",
+                    download_id, result.rowcount,
+                )
 
             skipped = attempted_count - len(items)
             if skipped:
