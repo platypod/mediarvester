@@ -128,6 +128,9 @@ src/                          # Python backend
     downloader.py             # yt-dlp wrapper; ThreadPoolExecutor; progress hooks → DB
     poller.py                 # APScheduler jobs; one per enabled Source
 
+tests/                        # pytest -- pure logic + API contract, no real network.
+                               # See README.md's "Running tests" section.
+
 frontend/                     # Vue 3 + TypeScript + Vite
   index.html
   vite.config.ts

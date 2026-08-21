@@ -106,6 +106,20 @@ The app is available at [http://localhost:8080](http://localhost:8080).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
+### Running tests
+
+```sh
+pip install -r requirements-dev.txt
+pytest
+```
+
+Runs against a real temp-file SQLite DB (not the dev/prod one), with all
+yt-dlp/network calls mocked out -- no cluster or network access needed.
+Runs automatically in CI on every push/PR, and gates the release image
+build on tag pushes (see `.github/workflows/test.yml` / `build.yml`).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 
 
 <!-- USAGE -->

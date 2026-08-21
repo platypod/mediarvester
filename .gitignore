@@ -7,3 +7,4 @@ frontend/vite.config.js
 frontend/src/**/*.js
 __pycache__/
 *.pyc
+.pytest_cache/
