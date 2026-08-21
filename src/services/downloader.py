@@ -1,5 +1,6 @@
 import asyncio
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -231,6 +232,13 @@ class Downloader:
         # _progress_hook while it's in flight, and popped once it finishes --
         # see _ordered_playlist_items for why this exists.
         self._index_maps: dict[int, dict[int, int]] = {}
+        # download_id -> {"owner": ..., "title": ...} for whatever is running
+        # right now. Feeds the "download.in_progress" gauge (a Grafana
+        # state-timeline, same idea as Jellyfin's now-playing panel), so it's
+        # updated straight from this thread rather than round-tripped through
+        # the DB -- title becomes accurate as soon as _progress_hook sees it.
+        self._in_progress: dict[int, dict[str, str]] = {}
+        self._in_progress_lock = threading.Lock()
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -254,6 +262,8 @@ class Downloader:
         started_at = time.monotonic()
         _downloads_started.add(1, {"is_collection": is_collection})
         _downloads_active.add(1)
+        with self._in_progress_lock:
+            self._in_progress[download_id] = {"owner": owner, "title": "(resolving title...)"}
         status = "error"
         platform = "unknown"
 
@@ -296,6 +306,8 @@ class Downloader:
                 self._schedule(self._on_error(download_id, str(exc)))
             finally:
                 self._index_maps.pop(download_id, None)
+                with self._in_progress_lock:
+                    self._in_progress.pop(download_id, None)
 
         _download_duration.record(
             time.monotonic() - started_at, {"status": status, "is_collection": is_collection}
@@ -424,6 +436,12 @@ class Downloader:
             playlist_count = len(position_map)
             if playlist_index in position_map:
                 playlist_index = position_map[playlist_index]
+
+        if title:
+            with self._in_progress_lock:
+                entry = self._in_progress.get(download_id)
+                if entry:
+                    entry["title"] = title
 
         if d["status"] == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -691,6 +709,26 @@ def _observe_queue_depth(options):
     # by DOWNLOAD_CONCURRENCY (default 2) -- non-zero for any length of time
     # means downloads are piling up faster than they can run.
     yield Observation(downloader._executor._work_queue.qsize())
+
+
+def _observe_in_progress(options):
+    # One Observation per download currently running, labeled by owner+title
+    # instead of a single count -- lets Grafana render this as a state-
+    # timeline (a row per owner, a bar per download) the same way the
+    # Jellyfin dashboard shows now-playing sessions. A download's row simply
+    # stops appearing once it's popped from _in_progress, which is what
+    # produces the gap between bars.
+    with downloader._in_progress_lock:
+        snapshot = list(downloader._in_progress.values())
+    for entry in snapshot:
+        yield Observation(1, {"owner": entry["owner"], "title": entry["title"]})
+
+
+meter.create_observable_gauge(
+    "mediarvester.download.in_progress",
+    callbacks=[_observe_in_progress],
+    description="1 for each download currently running, labeled by owner and title",
+)
 
 
 meter.create_observable_gauge(
