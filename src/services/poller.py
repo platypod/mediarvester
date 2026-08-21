@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from yt_dlp.utils import RejectedVideoReached
 
 from db import Download, MediaItem, Source, async_session
-from services.downloader import downloader, extract_flat_entries, get_cookies_path, is_probably_collection_url
+from services.downloader import downloader, get_cookies_path, is_probably_collection_url, matching_known_playlist
 from services.service_status import compute_service_status
 from services.telemetry import create_cached_gauge, meter, propagate_context, tracer
 
@@ -20,10 +20,6 @@ scheduler = AsyncIOScheduler()
 _polls = meter.create_counter("mediarvester.poller.poll", description="Source polls, by outcome")
 _new_entries = meter.create_counter(
     "mediarvester.poller.new_entries", description="New entries discovered across all polls"
-)
-_playlist_matches = meter.create_counter(
-    "mediarvester.poller.playlist_match",
-    description="Folder-placement lookups for newly-discovered videos, by whether a known playlist matched",
 )
 
 
@@ -95,7 +91,7 @@ async def _poll_source(source_id: int, span) -> None:
             if already_media:
                 continue
 
-            folder_hint = await _matching_known_playlist(session, source.owner, entry)
+            folder_hint = await matching_known_playlist(source.owner, entry)
 
             dl = Download(url=url, source_id=source_id, owner=source.owner, folder_hint=folder_hint)
             session.add(dl)
@@ -105,69 +101,6 @@ async def _poll_source(source_id: int, span) -> None:
 
         source.last_polled_at = datetime.utcnow()
         await session.commit()
-
-
-async def _matching_known_playlist(session, owner: str, entry: dict) -> str | None:
-    """If `entry` (a newly-discovered video from a followed creator) is
-    already part of a playlist this owner has previously downloaded in
-    full, return that playlist's title so the new video can join it in the
-    library instead of landing loose in the creator's flat root folder --
-    see services/downloader.py's `folder_hint`.
-
-    A followed *channel* has no notion of "this upload also belongs to
-    playlist X" on its own -- that's not a property of the video, only
-    discoverable by walking the playlist itself. So this only fires, and
-    only costs anything, when the creator has at least one completed
-    collection download on record; it stops at the first match rather than
-    checking every known playlist.
-    """
-    video_id = entry.get("id")
-    creator = entry.get("uploader") or entry.get("channel") or entry.get("creator")
-    if not video_id or not creator:
-        return None
-
-    result = await session.execute(
-        select(Download.url, Download.title)
-        .where(Download.owner == owner)
-        .where(Download.creator == creator)
-        .where(Download.status == "done")
-        .order_by(Download.finished_at.desc())
-        .limit(20)
-    )
-    seen_urls: set[str] = set()
-    candidates: list[tuple[str, str]] = []
-    for playlist_url, playlist_title in result.all():
-        if not playlist_title or playlist_url in seen_urls:
-            continue
-        if not is_probably_collection_url(playlist_url):
-            continue
-        seen_urls.add(playlist_url)
-        candidates.append((playlist_url, playlist_title))
-    if not candidates:
-        return None
-
-    with tracer.start_as_current_span("playlist_membership_check") as span:
-        span.set_attribute("candidate_count", len(candidates))
-        loop = asyncio.get_event_loop()
-        for playlist_url, playlist_title in candidates:
-            try:
-                members = await loop.run_in_executor(
-                    None, propagate_context(extract_flat_entries), playlist_url, owner
-                )
-            except Exception as exc:
-                logger.debug(
-                    "could not check whether %s belongs to known playlist %s: %s", video_id, playlist_url, exc
-                )
-                continue
-            if members and any((member or {}).get("id") == video_id for member in members):
-                logger.info(
-                    "new video %s matches known playlist %r, placing it alongside that playlist",
-                    video_id, playlist_title,
-                )
-                _playlist_matches.add(1, {"matched": True})
-                return playlist_title
-        _playlist_matches.add(1, {"matched": False})
-    return None
 
 
 async def _label_source(source: Source) -> None:

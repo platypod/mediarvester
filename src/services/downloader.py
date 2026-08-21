@@ -13,7 +13,7 @@ import yt_dlp
 from opentelemetry.metrics import Observation
 from opentelemetry.trace import Status, StatusCode
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from db import Download, MediaItem, async_session
 from services.episode_naming import resolve_episode
@@ -122,15 +122,11 @@ def _iter_downloaded_entries(info: dict) -> list[dict]:
     return [info]
 
 
-def extract_flat_entries(url: str, owner: str) -> list[dict] | None:
-    """Cheap, download-free listing of a collection's entries. Shared by two
-    callers: computing download order before a collection download starts
-    (see `_ordered_playlist_items`), and the poller checking whether a newly
-    discovered video belongs to an already-downloaded playlist (see
-    poller.py's `_known_playlist_urls` / folder_hint). Returns None when
-    yt-dlp reports no `entries` at all -- i.e. `url` wasn't actually a
-    collection, so callers should skip whatever they were about to do with
-    it rather than treat an empty list as "0 items"."""
+def _flat_extract_info(url: str, owner: str) -> dict:
+    """Cheap, download-free metadata lookup -- no format resolution, no PO
+    Token cost. Shared by `extract_flat_entries` (collections) and
+    `matching_known_playlist` (a single video's own id/uploader, to check it
+    against a known playlist's membership)."""
     opts = {
         "js_runtimes": {"node": {}},
         "extractor_args": {"youtube": {"player_client": ["mweb"]}},
@@ -141,8 +137,90 @@ def extract_flat_entries(url: str, owner: str) -> list[dict] | None:
     if cookies := get_cookies_path(owner):
         opts["cookiefile"] = cookies
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False) or {}
-    return info.get("entries")
+        return ydl.extract_info(url, download=False) or {}
+
+
+def extract_flat_entries(url: str, owner: str) -> list[dict] | None:
+    """Cheap, download-free listing of a collection's entries. Shared by two
+    callers: computing download order before a collection download starts
+    (see `_ordered_playlist_items`), and `matching_known_playlist` checking
+    whether a video belongs to an already-downloaded playlist. Returns None
+    when yt-dlp reports no `entries` at all -- i.e. `url` wasn't actually a
+    collection, so callers should skip whatever they were about to do with
+    it rather than treat an empty list as "0 items"."""
+    return _flat_extract_info(url, owner).get("entries")
+
+
+_playlist_matches = meter.create_counter(
+    "mediarvester.poller.playlist_match",
+    description="Folder-placement lookups for a video, by whether a known playlist matched",
+)
+
+
+async def matching_known_playlist(owner: str, entry: dict) -> str | None:
+    """If `entry` (a single video -- newly discovered by the poller, or a
+    plain URL resubmitted through the API) is already part of a playlist
+    this owner has previously downloaded in full, return that playlist's
+    title so the video can join it in the library instead of landing loose
+    in the creator's flat root folder -- see `folder_hint` below.
+
+    A followed *channel* (or a bare video URL) has no notion of "this
+    upload also belongs to playlist X" on its own -- that's not a property
+    of the video, only discoverable by walking the playlist itself. So this
+    only fires, and only costs anything, when the creator has at least one
+    completed collection download on record; it stops at the first match
+    rather than checking every known playlist.
+    """
+    video_id = entry.get("id")
+    creator = entry.get("uploader") or entry.get("channel") or entry.get("creator")
+    if not video_id or not creator:
+        return None
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Download.url, Download.title)
+            .where(Download.owner == owner)
+            .where(Download.creator == creator)
+            .where(Download.status == "done")
+            .order_by(Download.finished_at.desc())
+            .limit(20)
+        )
+        rows = result.all()
+
+    seen_urls: set[str] = set()
+    candidates: list[tuple[str, str]] = []
+    for playlist_url, playlist_title in rows:
+        if not playlist_title or playlist_url in seen_urls:
+            continue
+        if not is_probably_collection_url(playlist_url):
+            continue
+        seen_urls.add(playlist_url)
+        candidates.append((playlist_url, playlist_title))
+    if not candidates:
+        return None
+
+    with tracer.start_as_current_span("playlist_membership_check") as span:
+        span.set_attribute("candidate_count", len(candidates))
+        loop = asyncio.get_event_loop()
+        for playlist_url, playlist_title in candidates:
+            try:
+                members = await loop.run_in_executor(
+                    None, propagate_context(extract_flat_entries), playlist_url, owner
+                )
+            except Exception as exc:
+                logger.debug(
+                    "could not check whether %s belongs to known playlist %s: %s", video_id, playlist_url, exc
+                )
+                continue
+            if members and any((member or {}).get("id") == video_id for member in members):
+                logger.info(
+                    "video %s matches known playlist %r, placing it alongside that playlist",
+                    video_id, playlist_title,
+                )
+                _playlist_matches.add(1, {"matched": True})
+                return playlist_title
+        _playlist_matches.add(1, {"matched": False})
+    return None
 
 
 def _ordered_playlist_items(entries: list[dict]) -> tuple[str, dict[int, int]]:
@@ -289,6 +367,27 @@ class Downloader:
                     if entries:
                         playlist_items, position_map = _ordered_playlist_items(entries)
                         self._index_maps[download_id] = position_map
+                elif folder_hint is None and self._loop:
+                    # A single video with no folder_hint already set -- either
+                    # a plain URL submitted through the API, or an auto-retry
+                    # of one. The poller computes this for videos it discovers
+                    # itself (see poller.py's matching_known_playlist call),
+                    # but a manually (re)submitted URL never went through
+                    # that path, so without this it would land loose in the
+                    # creator's flat root folder even when it's actually part
+                    # of a playlist already downloaded in full -- exactly what
+                    # made a mess of MrDeriv's library (2026-08-21).
+                    try:
+                        entry_info = _flat_extract_info(url, owner)
+                        folder_hint = asyncio.run_coroutine_threadsafe(
+                            matching_known_playlist(owner, entry_info), self._loop
+                        ).result(timeout=30)
+                    except Exception as exc:
+                        logger.debug(
+                            "download %d: could not check playlist membership, "
+                            "continuing without a folder hint: %s",
+                            download_id, exc,
+                        )
 
                 opts = self._build_opts(download_id, owner, force, playlist_items, folder_hint)
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -549,7 +648,24 @@ class Downloader:
             # Same fallback chain as the outtmpl folder name below, so
             # "creator" reflects the same identity the file actually landed
             # under regardless of which field a given platform populates.
-            dl.creator = info.get("uploader") or info.get("channel") or info.get("creator")
+            # For a collection (playlist/channel tab), yt-dlp's top-level info
+            # dict routinely has none of these -- they're per-entry fields --
+            # so without the entries-fallback below, every collection's own
+            # Download row ends up with creator=None and can never itself
+            # serve as a `matching_known_playlist` candidate for later videos
+            # from the same creator (confirmed empirically: every prior
+            # collection download in this DB had creator=None).
+            dl.creator = (
+                info.get("uploader") or info.get("channel") or info.get("creator")
+                or next(
+                    (
+                        e.get("uploader") or e.get("channel") or e.get("creator")
+                        for e in (info.get("entries") or [])
+                        if e
+                    ),
+                    None,
+                )
+            )
             dl.current_title = None
 
             for item in items:
