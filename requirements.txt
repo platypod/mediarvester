@@ -12,7 +12,7 @@ yt-dlp-ejs
 # it, format URLs resolve and start streaming fine but get cut off mid-transfer
 # with a 403 -- confirmed empirically 2026-08-18.
 bgutil-ytdlp-pot-provider>=1.3.1
-sse-starlette>=2.1.0
+sse-starlette>=3.4.8
 python-multipart>=0.0.9
 # Observability: standard OpenTelemetry SDK for metrics + traces, exported via
 # plain OTLP to the in-cluster collector (see services/telemetry.py). Kept
