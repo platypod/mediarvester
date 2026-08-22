@@ -1,5 +1,7 @@
 import asyncio
+import glob
 import os
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -42,11 +44,18 @@ _downloads_active = meter.create_up_down_counter(
 )
 
 # How many times a failed item gets automatically requeued before we give up
-# on it for good, and how long to wait before each attempt -- long enough
-# that a transient site-side issue (rate limiting, a PO Token hiccup) has a
-# real chance to clear rather than immediately re-tripping the same limit.
-_MAX_AUTO_RETRIES = 3
-_RETRY_DELAYS_SECONDS = [120, 600, 1800]  # 2min, 10min, 30min
+# on it for good, and how long to wait before each attempt. The first couple
+# of delays are short, for a genuinely transient blip (a network hiccup, a
+# one-off format hiccup). But YouTube's own rate-limit message is explicitly
+# "for up to an hour" -- the original [120, 600, 1800] schedule kept every
+# attempt inside that same hour, so a real rate-limit trip could burn all 3
+# retries against the same still-active limit and give up for good having
+# never actually gotten past it (confirmed happening for real: MrDeriv's
+# VBssNWJl-bo, 2026-08-21). The last two tiers are deliberately pushed well
+# past that window so a real rate limit -- or a same-day A/B-test-style
+# block -- has actually cleared by the time they fire.
+_MAX_AUTO_RETRIES = 4
+_RETRY_DELAYS_SECONDS = [120, 1800, 3 * 3600, 24 * 3600]  # 2min, 30min, 3h, 1d
 
 
 def is_probably_collection_url(url: str) -> bool:
@@ -301,6 +310,71 @@ def _apply_episode_prefix(abs_path: str, entry: dict) -> str:
             logger.warning("could not move sidecar %s alongside renamed episode: %s", name, exc)
 
     return str(new_path)
+
+
+def _verify_downloaded_file(path: str, expected_duration: float | None) -> str | None:
+    """Confirm a file yt-dlp reported as finished is actually a complete,
+    readable media file -- not a truncated write (disk full mid-merge, a
+    process kill) or a container ffmpeg produced but couldn't finish
+    properly. Existence alone (the only check before this) doesn't catch
+    either case. Returns None when the file looks fine, or a short reason
+    string when it doesn't -- callers treat that the same as "no file was
+    produced at all" (failed entry, eligible for auto-retry) and remove the
+    bad file rather than leave a corrupt one in the library."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"ffprobe could not run: {exc}"
+    if result.returncode != 0:
+        return f"ffprobe rejected the file: {result.stderr.strip()[:200]}"
+    try:
+        actual_duration = float(result.stdout.strip())
+    except ValueError:
+        return "ffprobe reported no readable duration"
+    if actual_duration <= 0:
+        return "reported duration is zero"
+    # Some slack for container/timestamp rounding -- this is a sanity check
+    # against a badly truncated file, not a frame-accurate comparison.
+    if expected_duration and actual_duration < expected_duration * 0.9:
+        return (
+            f"duration {actual_duration:.0f}s is well short of the "
+            f"expected {expected_duration:.0f}s"
+        )
+    return None
+
+
+def _cleanup_stray_fragments(original_filepath: str) -> None:
+    """yt-dlp writes per-format temp fragments alongside the final output
+    (e.g. `<title>.f299.mp4.part`, an audio-only `<title>.f251.webm` while
+    waiting to mux with a video track that never finished) and normally
+    removes them itself once a download completes or is cleanly aborted.
+    A process kill mid-transfer (a pod OOM, a redeploy) skips that cleanup
+    entirely, and nothing else ever revisits the row to try again -- these
+    survive indefinitely. Confirmed happening for real: a `.f299.mp4.part`
+    + orphaned `.f251.webm` for the same video survived several retries
+    before being found and removed by hand (2026-08-21/22, MrDeriv library
+    cleanup). Safe regardless of whether this entry ultimately succeeded or
+    failed -- a legitimate final output is never named `<stem>.f<N>.*`."""
+    if not original_filepath:
+        return
+    original = Path(original_filepath)
+    parent = original.parent
+    if not parent.is_dir():
+        return
+    for candidate in parent.glob(f"{glob.escape(original.stem)}.f[0-9]*"):
+        try:
+            candidate.unlink()
+            logger.info("removed stray incomplete fragment: %s", candidate.name)
+        except OSError as exc:
+            logger.warning("could not remove stray fragment %s: %s", candidate.name, exc)
 
 
 class Downloader:
@@ -718,11 +792,27 @@ class Downloader:
                 "download %d: entry %r produced no file, skipping",
                 download_id, entry.get("title") or entry.get("webpage_url") or fallback_url,
             )
+            _cleanup_stray_fragments(abs_path)
             return None
+
+        problem = _verify_downloaded_file(abs_path, entry.get("duration"))
+        if problem:
+            logger.warning(
+                "download %d: %r failed verification (%s) -- removing and treating as failed",
+                download_id, entry.get("title") or fallback_url, problem,
+            )
+            try:
+                Path(abs_path).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("could not remove the bad file %s: %s", abs_path, exc)
+            _cleanup_stray_fragments(abs_path)
+            return None
+
         # Normalise away double slashes that arise when optional template
         # components (e.g. playlist) are absent and evaluate to "".
         abs_path = str(Path(abs_path))
         abs_path = _apply_episode_prefix(abs_path, entry)
+        _cleanup_stray_fragments(requested[0].get("filepath", ""))
         local_path = os.path.relpath(abs_path, MEDIA_ROOT)
 
         thumbnail_path: str | None = None

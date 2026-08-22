@@ -20,6 +20,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install ffmpeg
+        # Needed by test_file_verification.py -- same tool the production
+        # image relies on for its own merge/postprocessing step.
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 

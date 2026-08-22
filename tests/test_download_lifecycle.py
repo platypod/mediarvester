@@ -8,8 +8,19 @@ silently breaking playlist-folder matching), and the stale-error-row
 cleanup on success (2026-08-21 feature).
 """
 
+import pytest
+
 import services.downloader as downloader_module
 from services.downloader import Downloader
+
+
+@pytest.fixture(autouse=True)
+def _skip_real_file_verification(monkeypatch):
+    # This file is about the on_success/on_error DB state machine, not file
+    # integrity -- the test videos below are placeholder bytes, not real
+    # media, so real ffprobe verification would reject every one of them.
+    # See test_file_verification.py for _verify_downloaded_file's own tests.
+    monkeypatch.setattr(downloader_module, "_verify_downloaded_file", lambda *a, **kw: None)
 
 
 def _write(path, content: bytes = b"fake video bytes"):

@@ -1,9 +1,16 @@
 """services/downloader.py -- the auto-retry state machine.
 
 Added after the 2026-08-20/21 incident: a failed item used to just... stay
-failed. _compute_retry_at / _schedule_retries are what cap retries at
-_MAX_AUTO_RETRIES and space them out (2min/10min/30min) so a transient
-site-side issue has a real chance to clear before the next attempt.
+failed. _compute_retry_at / _schedule_retries are what cap retries and
+space them out so a transient site-side issue has a real chance to clear
+before the next attempt.
+
+The exact schedule was revised 2026-08-22: the original [120, 600, 1800]
+(2/10/30 min) kept every retry inside the same hour YouTube's own
+rate-limit message names ("for up to an hour"), so a real rate-limit trip
+could burn every retry against the same still-active limit and give up
+having never gotten past it (confirmed happening for real, MrDeriv's
+VBssNWJl-bo). The last two tiers now reach well past that window.
 """
 
 import asyncio
@@ -115,3 +122,15 @@ async def test_falls_back_to_plain_url_field_when_no_webpage_url(dl, monkeypatch
 
 async def _noop_coro():
     return None
+
+
+def test_retry_schedule_reaches_well_past_youtubes_own_rate_limit_window():
+    # A spec test, not a behavior test: locks in the actual numbers so a
+    # future tweak has to consciously touch this assertion, rather than
+    # silently drifting the schedule back inside the 1h rate-limit window
+    # this was explicitly revised to escape (2026-08-22).
+    assert _MAX_AUTO_RETRIES == 4
+    assert _RETRY_DELAYS_SECONDS == [120, 1800, 3 * 3600, 24 * 3600]
+    assert max(_RETRY_DELAYS_SECONDS) >= 24 * 3600
+    assert sum(_RETRY_DELAYS_SECONDS[:2]) < 3600  # first couple stay quick
+    assert _RETRY_DELAYS_SECONDS[-1] > 3600  # but the schedule does reach past 1h
