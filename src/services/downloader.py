@@ -912,3 +912,63 @@ async def recover_interrupted() -> None:
 
     if rows:
         logger.info("re-enqueued %d interrupted download(s) after restart", len(rows))
+
+
+async def recover_missed_retries() -> None:
+    """Re-fire an auto-retry that a restart silently ate.
+
+    _schedule_retries's delay is a bare in-process asyncio task (sleep +
+    create_task on the running event loop) -- nothing durable backs it.
+    recover_interrupted (above) only rescues rows stuck `queued`/
+    `downloading`; a row already sitting in `error` with a future
+    `retry_at` isn't stuck in either of those states, so a restart in the
+    middle of that wait just loses the retry with no trace: no error, no
+    log, nothing ever revisits it. Confirmed happening for real 2026-08-21
+    (a redeploy landed 3 minutes before a scheduled retry).
+
+    On startup, find every error row whose retry_at has already passed --
+    _compute_retry_at already returns None once _MAX_AUTO_RETRIES is hit,
+    so an exhausted row is naturally excluded -- and where nothing more
+    recent exists for the same url+owner (i.e. the retry this row itself
+    scheduled genuinely never happened, rather than having already fired
+    and produced its own newer row, successful or not).
+    """
+    from sqlalchemy import func, select
+
+    now = datetime.utcnow()
+    async with async_session() as session:
+        candidates = (
+            await session.execute(
+                select(Download)
+                .where(Download.status == "error")
+                .where(Download.retry_at.isnot(None))
+                .where(Download.retry_at <= now)
+            )
+        ).scalars().all()
+
+        rows = []
+        for dl in candidates:
+            latest_id = (
+                await session.execute(
+                    select(func.max(Download.id))
+                    .where(Download.url == dl.url)
+                    .where(Download.owner == dl.owner)
+                )
+            ).scalar_one()
+            if latest_id == dl.id:
+                rows.append((dl.id, dl.url, dl.owner, dl.source_id, dl.retry_count, dl.title))
+
+    for download_id, url, owner, source_id, retry_count, title in rows:
+        logger.warning(
+            "download %d: a scheduled auto-retry for %s never fired (likely a restart mid-wait) -- firing it now",
+            download_id, url,
+        )
+        async with async_session() as session:
+            retry_dl = Download(url=url, owner=owner, source_id=source_id, retry_count=retry_count + 1, title=title)
+            session.add(retry_dl)
+            await session.commit()
+            await session.refresh(retry_dl)
+        downloader.enqueue(retry_dl.id, url, owner)
+
+    if rows:
+        logger.info("recovered %d missed auto-retry(ies) after restart", len(rows))

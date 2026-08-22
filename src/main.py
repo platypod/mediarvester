@@ -28,7 +28,13 @@ from api.media import router as media_router  # noqa: E402
 from api.settings import router as settings_router  # noqa: E402
 from api.sources import router as sources_router  # noqa: E402
 from db import create_all  # noqa: E402
-from services.downloader import COOKIES_ROOT, MEDIA_ROOT, downloader, recover_interrupted  # noqa: E402
+from services.downloader import (  # noqa: E402
+    COOKIES_ROOT,
+    MEDIA_ROOT,
+    downloader,
+    recover_interrupted,
+    recover_missed_retries,
+)
 from services.poller import init_scheduler, scheduler  # noqa: E402
 
 # Applied once, process-wide, before any directory/file is created (by us or by
@@ -47,6 +53,7 @@ async def lifespan(app: FastAPI):
     await create_all()
     downloader.set_loop(asyncio.get_event_loop())
     await recover_interrupted()
+    await recover_missed_retries()
     await init_scheduler()
     logger.info("mediarvester started")
     yield
