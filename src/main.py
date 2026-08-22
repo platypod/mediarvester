@@ -34,6 +34,7 @@ from services.downloader import (  # noqa: E402
     downloader,
     recover_interrupted,
     recover_missed_retries,
+    warm_up_yt_dlp_plugins,
 )
 from services.poller import init_scheduler, scheduler  # noqa: E402
 
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
     os.makedirs("data", exist_ok=True)
     await create_all()
     downloader.set_loop(asyncio.get_event_loop())
+    warm_up_yt_dlp_plugins()
     await recover_interrupted()
     await recover_missed_retries()
     await init_scheduler()

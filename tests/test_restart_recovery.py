@@ -11,7 +11,7 @@ minutes before a scheduled retry, silently dropping it with no trace).
 from datetime import datetime, timedelta
 
 import services.downloader as downloader_module
-from services.downloader import recover_interrupted, recover_missed_retries
+from services.downloader import recover_interrupted, recover_missed_retries, warm_up_yt_dlp_plugins
 
 
 async def test_recover_interrupted_reenqueues_stuck_downloading_rows(session, make_download, monkeypatch):
@@ -146,3 +146,24 @@ async def test_recover_missed_retries_is_scoped_per_owner(session, make_download
     monkeypatch.setattr(downloader_module.downloader, "enqueue", lambda *a, **kw: enqueued.append(a))
     await recover_missed_retries()
     assert len(enqueued) == 1
+
+
+def test_warm_up_yt_dlp_plugins_does_not_raise():
+    # 2026-08-22 fix: this is what closes off the "PoTokenProvider ...
+    # already registered" race (recover_interrupted handing several
+    # downloads to DOWNLOAD_CONCURRENCY threads at once, each constructing
+    # its *first* YoutubeDL() at close to the same moment). Just confirms
+    # the warm-up construction itself is safe to call -- the race it
+    # prevents is inherently about concurrent timing, not something a
+    # single-threaded unit test can reproduce.
+    warm_up_yt_dlp_plugins()
+
+
+def test_warm_up_yt_dlp_plugins_tolerates_a_construction_failure(monkeypatch):
+    import yt_dlp
+
+    def raise_error(*a, **kw):
+        raise RuntimeError("something yt-dlp internal went wrong")
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", raise_error)
+    warm_up_yt_dlp_plugins()  # must not raise -- startup shouldn't crash over this

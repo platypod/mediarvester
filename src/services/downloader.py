@@ -995,6 +995,32 @@ meter.create_observable_gauge(
 )
 
 
+def warm_up_yt_dlp_plugins() -> None:
+    """Construct one throwaway YoutubeDL() synchronously, before any worker
+    thread gets a chance to start.
+
+    yt-dlp's PO-Token provider plugins (bgutil-ytdlp-pot-provider) register
+    themselves into a shared, process-wide registry dict the first time any
+    YoutubeDL() is constructed -- see extractor/youtube/pot/_provider.py's
+    register_provider_generic, which does a bare
+    `assert key not in registry` with no lock around the check-then-set.
+    recover_interrupted (below) can hand several downloads to the worker
+    pool at once right at startup; if two DOWNLOAD_CONCURRENCY threads each
+    construct their *first* YoutubeDL() at close to the same moment, the
+    loser trips that assertion. It's harmless (the plugin that won the race
+    registers fine and is what every download actually uses from then on --
+    confirmed by it never recurring after the first hit each restart), but
+    it logs a scary-looking "Error while importing module ... already
+    registered" traceback. Doing this once, single-threaded, closes the
+    race off entirely: the registry is already populated before anything
+    concurrent can start.
+    """
+    try:
+        yt_dlp.YoutubeDL({"quiet": True, "js_runtimes": {"node": {}}}).close()
+    except Exception as exc:
+        logger.warning("could not warm up yt-dlp's plugin registry: %s", exc)
+
+
 async def recover_interrupted() -> None:
     """Re-enqueue downloads orphaned by a restart.
 
