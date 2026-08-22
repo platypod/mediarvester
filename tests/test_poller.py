@@ -212,3 +212,47 @@ async def _async_noop(*a, **kw):
 
 async def _async_none(*a, **kw):
     return None
+
+
+async def test_concurrent_polls_never_scan_youtube_at_the_same_time(
+    session, make_source, monkeypatch
+):
+    # 2026-08-22 fix: sources on the same poll_interval_minutes land in
+    # lockstep forever (APScheduler's interval trigger counts from whenever
+    # the job was added), and nothing stopped their scans running
+    # concurrently -- confirmed happening for real: 3 sources polled within
+    # the same second, YouTube rate-limited within 30s. _youtube_scan_lock
+    # should mean only one source's scan is ever actually in flight at once,
+    # no matter how many poll_source calls overlap.
+    source_a = await make_source(session, url="https://www.youtube.com/@A")
+    source_b = await make_source(session, url="https://www.youtube.com/@B")
+    monkeypatch.setattr(poller_module, "_label_source", _async_noop)
+    monkeypatch.setattr(poller_module.downloader, "enqueue", lambda *a, **kw: None)
+
+    concurrent_scans = 0
+    max_concurrent_scans = 0
+
+    def fake_new_entries_since(*a, **kw):
+        nonlocal concurrent_scans, max_concurrent_scans
+        concurrent_scans += 1
+        max_concurrent_scans = max(max_concurrent_scans, concurrent_scans)
+        try:
+            # Simulate a slow scan -- long enough that, without the lock,
+            # the two polls below would clearly overlap.
+            import time
+
+            time.sleep(0.05)
+            return [], None
+        finally:
+            concurrent_scans -= 1
+
+    monkeypatch.setattr(poller_module, "_new_entries_since", fake_new_entries_since)
+
+    import asyncio
+
+    await asyncio.gather(
+        _poll_source(source_a.id, _FakeSpan()),
+        _poll_source(source_b.id, _FakeSpan()),
+    )
+
+    assert max_concurrent_scans == 1

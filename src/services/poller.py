@@ -22,6 +22,19 @@ _new_entries = meter.create_counter(
     "mediarvester.poller.new_entries", description="New entries discovered across all polls"
 )
 
+# Every source's discovery scan already paces its own requests
+# (sleep_interval_requests=1 in _new_entries_in_playlist) -- but nothing
+# stopped two sources' scans from running *concurrently*, which multiplies
+# the effective request rate to YouTube by however many happen to fire at
+# once. Sources on the same poll_interval_minutes land in lockstep forever
+# (APScheduler's interval trigger counts from whenever the job was added,
+# so sources added around the same time keep firing together on every
+# cycle) -- confirmed happening for real 2026-08-22: 3 sources polled
+# within the same second, YouTube rate-limited within 30s. This serializes
+# every source's network-heavy work process-wide; a second source's poll
+# simply waits its turn instead of racing the first one to YouTube.
+_youtube_scan_lock = asyncio.Lock()
+
 
 async def poll_source(source_id: int) -> None:
     with tracer.start_as_current_span("poll_source") as span:
@@ -38,26 +51,27 @@ async def _poll_source(source_id: int, span) -> None:
 
         logger.info("polling source %d: %s", source_id, source.url)
 
-        if not source.label:
-            await _label_source(source)
-
         cutoff_ts = source.created_at.replace(tzinfo=timezone.utc).timestamp()
         cookies = get_cookies_path(source.owner)
-        try:
-            loop = asyncio.get_event_loop()
-            entries, poll_error = await loop.run_in_executor(
-                None,
-                propagate_context(
-                    lambda: _new_entries_since(source.url, source.include_shorts, cutoff_ts, cookies)
-                ),
-            )
-        except Exception as exc:
-            logger.error("failed to fetch source %d: %s", source_id, exc)
-            source.last_polled_at = datetime.utcnow()
-            source.last_poll_error = str(exc)
-            await session.commit()
-            _polls.add(1, {"result": "error"})
-            return
+        async with _youtube_scan_lock:
+            if not source.label:
+                await _label_source(source)
+
+            try:
+                loop = asyncio.get_event_loop()
+                entries, poll_error = await loop.run_in_executor(
+                    None,
+                    propagate_context(
+                        lambda: _new_entries_since(source.url, source.include_shorts, cutoff_ts, cookies)
+                    ),
+                )
+            except Exception as exc:
+                logger.error("failed to fetch source %d: %s", source_id, exc)
+                source.last_polled_at = datetime.utcnow()
+                source.last_poll_error = str(exc)
+                await session.commit()
+                _polls.add(1, {"result": "error"})
+                return
 
         if poll_error:
             logger.warning("source %d poll degraded: %s", source_id, poll_error)
