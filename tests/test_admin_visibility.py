@@ -2,19 +2,25 @@
 
 2026-08-22 feature: Authelia already forwards LDAP group membership as
 Remote-Groups to every service behind forward-auth (comma-separated) --
-mediarvester just wasn't reading it. A requester in ADMIN_GROUP (default
-"admins") sees and can manage every owner's Downloads/Sources/MediaItems;
-everyone else stays scoped to their own, exactly as before.
+mediarvester just wasn't reading it. A requester in any of ADMIN_GROUPS
+(default {"admins"}) sees and can manage every owner's Downloads/Sources/
+MediaItems; everyone else stays scoped to their own, exactly as before.
+
+2026-08-22 follow-up: ADMIN_GROUP (single group) became ADMIN_GROUPS (a set) so
+the stack can grant admin via any of mediarvester_admin/media_admin/admins,
+not just one hardcoded name -- see platypod/stack's access-groups.yaml.
 """
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
-from api.deps import ADMIN_GROUP, is_admin
+from api.deps import ADMIN_GROUPS, is_admin
 from api.downloads import router as downloads_router
 from api.media import router as media_router
 from api.sources import router as sources_router
+
+_ADMIN_GROUP = next(iter(ADMIN_GROUPS))  # any one admin-granting group works for these tests
 
 
 class _FakeRequest:
@@ -23,7 +29,7 @@ class _FakeRequest:
 
 
 def test_is_admin_true_when_group_present():
-    assert is_admin(_FakeRequest(f"media,{ADMIN_GROUP},dev")) is True
+    assert is_admin(_FakeRequest(f"media,{_ADMIN_GROUP},dev")) is True
 
 
 def test_is_admin_false_when_group_absent():
@@ -35,7 +41,7 @@ def test_is_admin_false_when_header_missing():
 
 
 def test_is_admin_tolerates_stray_whitespace_around_group_names():
-    assert is_admin(_FakeRequest(f" media , {ADMIN_GROUP} ")) is True
+    assert is_admin(_FakeRequest(f" media , {_ADMIN_GROUP} ")) is True
 
 
 def test_is_admin_false_for_empty_header():
@@ -48,7 +54,7 @@ def test_is_admin_false_for_empty_header():
 def _headers(user="reivi", admin=False):
     h = {"Remote-User": user}
     if admin:
-        h["Remote-Groups"] = f"media,{ADMIN_GROUP}"
+        h["Remote-Groups"] = f"media,{_ADMIN_GROUP}"
     return h
 
 

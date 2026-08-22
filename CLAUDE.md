@@ -48,7 +48,7 @@ Every query filters by `owner`, so users only see their own data —
 **unless the requester is an admin.** Authelia already forwards LDAP group membership as
 `Remote-Groups` (comma-separated) to every service behind forward-auth, mediarvester included —
 no Authelia/Traefik/LLDAP change was needed to add this, the app just wasn't reading it before.
-`api/deps.py`'s `is_admin(request)` checks whether `ADMIN_GROUP` (default `admins`) is among the
+`api/deps.py`'s `is_admin(request)` checks whether `ADMIN_GROUPS` (default `{admins}`) overlaps with the
 forwarded groups; every list/get/patch/delete endpoint takes an `admin: bool = Depends(is_admin)`
 alongside `owner` and skips (or bypasses) its `.owner == owner` scoping when true. `GET
 /api/settings/me` also returns `is_admin` so the frontend can show an "admin" badge and,
@@ -270,7 +270,7 @@ In production, FastAPI serves the built `frontend/dist/` as static files under `
 | `AUTH_HEADER` | `Remote-User` | HTTP header forwarded by Authelia with the user identity |
 | `DEFAULT_USER` | `anonymous` | User identity when the auth header is absent |
 | `AUTH_GROUPS_HEADER` | `Remote-Groups` | HTTP header forwarded by Authelia with the user's LDAP groups (comma-separated) |
-| `ADMIN_GROUP` | `admins` | LDAP group that grants cross-owner visibility (see "Authentication & multi-user" above) |
+| `ADMIN_GROUPS` | `admins` | Comma-separated LDAP groups; membership in ANY grants cross-owner visibility (see "Authentication & multi-user" above) |
 | `DOWNLOAD_CONCURRENCY` | `2` | Max parallel yt-dlp processes |
 | `YT_DLP_COOKIES_PATH` | _(empty)_ | Global fallback cookies file (legacy / single-user) |
 | `YT_DLP_USERNAME` | _(empty)_ | Optional account username |
