@@ -27,6 +27,14 @@ MEDIA_ROOT = environ.get("MEDIA_ROOT", "/app/downloads")
 COOKIES_ROOT = environ.get("COOKIES_ROOT", "/app/cookies")
 CONCURRENCY = int(environ.get("DOWNLOAD_CONCURRENCY", "2"))
 
+# The UI placeholder shown for the few seconds between a download starting
+# and yt-dlp's progress hook first reporting a real title (extraction/PO
+# Token exchange happens before that). Deliberately excluded from the
+# in_progress OTel gauge below -- it's a meaningless, throwaway label value
+# to a metrics backend (a new Mimir series per occurrence for a string
+# nobody queries on), not something worth graphing.
+_RESOLVING_TITLE_PLACEHOLDER = "(resolving title...)"
+
 _downloads_started = meter.create_counter(
     "mediarvester.download.started", description="Downloads that began running"
 )
@@ -428,7 +436,7 @@ class Downloader:
         _downloads_started.add(1, {"is_collection": is_collection})
         _downloads_active.add(1)
         with self._in_progress_lock:
-            self._in_progress[download_id] = {"owner": owner, "title": "(resolving title...)"}
+            self._in_progress[download_id] = {"owner": owner, "title": _RESOLVING_TITLE_PLACEHOLDER}
         status = "error"
         platform = "unknown"
 
@@ -978,6 +986,8 @@ def _observe_in_progress(options):
     with downloader._in_progress_lock:
         snapshot = list(downloader._in_progress.values())
     for entry in snapshot:
+        if entry["title"] == _RESOLVING_TITLE_PLACEHOLDER:
+            continue
         yield Observation(1, {"owner": entry["owner"], "title": entry["title"]})
 
 
