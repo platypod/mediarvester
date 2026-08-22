@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import get_current_user
+from api.deps import get_current_user, is_admin
 from db import Source, get_session
 from services.poller import poll_source, schedule_source, scheduler
 
@@ -66,11 +66,13 @@ async def create_source(
 @router.get("", response_model=list[SourceRead])
 async def list_sources(
     owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(Source).where(Source.owner == owner).order_by(Source.created_at.desc())
-    )
+    q = select(Source).order_by(Source.created_at.desc())
+    if not admin:
+        q = q.where(Source.owner == owner)
+    result = await session.execute(q)
     return result.scalars().all()
 
 
@@ -79,10 +81,11 @@ async def patch_source(
     source_id: int,
     body: SourcePatch,
     owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
     session: AsyncSession = Depends(get_session),
 ):
     source = await session.get(Source, source_id)
-    if not source or source.owner != owner:
+    if not source or (source.owner != owner and not admin):
         raise HTTPException(status_code=404)
     if body.label is not None:
         source.label = body.label
@@ -102,10 +105,11 @@ async def patch_source(
 async def delete_source(
     source_id: int,
     owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
     session: AsyncSession = Depends(get_session),
 ):
     source = await session.get(Source, source_id)
-    if not source or source.owner != owner:
+    if not source or (source.owner != owner and not admin):
         raise HTTPException(status_code=404)
     job_id = f"source_{source_id}"
     if scheduler.get_job(job_id):
@@ -118,10 +122,11 @@ async def delete_source(
 async def trigger_poll(
     source_id: int,
     owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
     session: AsyncSession = Depends(get_session),
 ):
     source = await session.get(Source, source_id)
-    if not source or source.owner != owner:
+    if not source or (source.owner != owner and not admin):
         raise HTTPException(status_code=404)
     asyncio.create_task(poll_source(source_id))
     return {"detail": "poll triggered"}

@@ -8,6 +8,7 @@ export interface Source {
   label: string | null
   platform: string | null
   enabled: boolean
+  owner: string
   include_shorts: boolean
   poll_interval_minutes: number
   last_polled_at: string | null

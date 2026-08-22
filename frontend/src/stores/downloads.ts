@@ -11,6 +11,7 @@ export interface Download {
   status: 'queued' | 'downloading' | 'done' | 'error'
   progress: number
   error: string | null
+  owner: string
   source_id: number | null
   created_at: string
   finished_at: string | null

@@ -20,6 +20,7 @@ export interface ServiceStatus {
 
 export const useSettingsStore = defineStore('settings', () => {
   const user = ref<string>('anonymous')
+  const isAdmin = ref<boolean>(false)
   const cookiesStatus = ref<CookiesStatus>({ has_cookies: false, uploaded_at: null })
   const cookiesStatusError = ref('')
   const uploading = ref(false)
@@ -29,8 +30,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const serviceStatus = ref<ServiceStatus>({ degraded: false, detected_since: null, recent_failures: 0 })
 
   async function fetchMe() {
-    const data = await api.get<{ user: string }>('/api/settings/me')
+    const data = await api.get<{ user: string; is_admin: boolean }>('/api/settings/me')
     user.value = data.user
+    isAdmin.value = data.is_admin
   }
 
   async function fetchVersion() {
@@ -84,6 +86,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   return {
     user,
+    isAdmin,
     cookiesStatus,
     cookiesStatusError,
     uploading,

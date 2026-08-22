@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useSourcesStore } from '../stores/sources'
+import { useSettingsStore } from '../stores/settings'
 import SourceCard from '../components/SourceCard.vue'
 import AddSourceDialog from '../components/AddSourceDialog.vue'
 
 const store = useSourcesStore()
+const settings = useSettingsStore()
 const dialogOpen = ref(false)
 const polling = ref<Record<number, boolean>>({})
 
@@ -47,6 +49,7 @@ async function pollNow(id: number) {
         :key="s.id"
         :source="s"
         :polling="polling[s.id]"
+        :show-owner="settings.isAdmin"
         @delete="store.remove(s.id)"
         @toggle="store.patch(s.id, { enabled: !s.enabled })"
         @toggle-shorts="store.patch(s.id, { include_shorts: !s.include_shorts })"

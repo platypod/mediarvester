@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useMediaStore } from '../stores/media'
+import { useSettingsStore } from '../stores/settings'
 import MediaCard from '../components/MediaCard.vue'
 
 const store = useMediaStore()
+const settings = useSettingsStore()
 const filter = ref('')
 
 onMounted(() => store.fetchAll())
@@ -30,6 +32,7 @@ onMounted(() => store.fetchAll())
         v-for="item in store.items"
         :key="item.id"
         :item="item"
+        :show-owner="settings.isAdmin"
         @delete="store.remove(item.id)"
       />
     </div>

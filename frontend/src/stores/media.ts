@@ -10,6 +10,7 @@ export interface MediaItem {
   local_path: string
   thumbnail_path: string | null
   duration_seconds: number | null
+  owner: string
   download_id: number
 }
 

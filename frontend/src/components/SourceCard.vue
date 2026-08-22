@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Source } from '../stores/sources'
 
-const props = defineProps<{ source: Source; polling?: boolean }>()
+const props = defineProps<{ source: Source; polling?: boolean; showOwner?: boolean }>()
 defineEmits<{ delete: []; toggle: []; 'toggle-shorts': []; poll: [] }>()
 
 function timeAgo(iso: string | null): string {
@@ -20,6 +20,13 @@ function timeAgo(iso: string | null): string {
   <div class="bg-gray-800 rounded-lg p-4 flex items-start gap-4">
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2 flex-wrap mb-1">
+        <span
+          v-if="showOwner"
+          class="text-xs bg-purple-900/60 text-purple-300 px-2 py-0.5 rounded"
+          title="Owner (visible to admins only)"
+        >
+          {{ source.owner }}
+        </span>
         <span v-if="source.platform" class="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded">
           {{ source.platform }}
         </span>

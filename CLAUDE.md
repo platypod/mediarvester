@@ -43,7 +43,18 @@ handles OIDC and forwards the authenticated user's identity as an HTTP header on
   Authelia guarantees no unauthenticated request reaches the app.
 
 All `Download`, `Source`, and `MediaItem` rows carry an `owner` field (the forwarded user ID).
-Every query filters by `owner`, so users only see their own data.
+Every query filters by `owner`, so users only see their own data —
+
+**unless the requester is an admin.** Authelia already forwards LDAP group membership as
+`Remote-Groups` (comma-separated) to every service behind forward-auth, mediarvester included —
+no Authelia/Traefik/LLDAP change was needed to add this, the app just wasn't reading it before.
+`api/deps.py`'s `is_admin(request)` checks whether `ADMIN_GROUP` (default `admins`) is among the
+forwarded groups; every list/get/patch/delete endpoint takes an `admin: bool = Depends(is_admin)`
+alongside `owner` and skips (or bypasses) its `.owner == owner` scoping when true. `GET
+/api/settings/me` also returns `is_admin` so the frontend can show an "admin" badge and,
+per-card, whose item it is (`showOwner` prop on `DownloadCard`/`SourceCard`/`MediaCard`, wired to
+`settings.isAdmin` — hidden entirely for non-admins, since seeing your own name on every row you
+already know is yours would just be noise).
 
 ---
 
@@ -258,6 +269,8 @@ In production, FastAPI serves the built `frontend/dist/` as static files under `
 | `COOKIES_ROOT` | `/app/cookies` | Per-user cookies files (`{user}.txt`) — mount as volume |
 | `AUTH_HEADER` | `Remote-User` | HTTP header forwarded by Authelia with the user identity |
 | `DEFAULT_USER` | `anonymous` | User identity when the auth header is absent |
+| `AUTH_GROUPS_HEADER` | `Remote-Groups` | HTTP header forwarded by Authelia with the user's LDAP groups (comma-separated) |
+| `ADMIN_GROUP` | `admins` | LDAP group that grants cross-owner visibility (see "Authentication & multi-user" above) |
 | `DOWNLOAD_CONCURRENCY` | `2` | Max parallel yt-dlp processes |
 | `YT_DLP_COOKIES_PATH` | _(empty)_ | Global fallback cookies file (legacy / single-user) |
 | `YT_DLP_USERNAME` | _(empty)_ | Optional account username |

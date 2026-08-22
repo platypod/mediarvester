@@ -178,6 +178,7 @@ onUnmounted(() => {
         v-for="dl in filteredItems"
         :key="dl.id"
         :download="dl"
+        :show-owner="settings.isAdmin"
         @delete="store.remove(dl.id)"
       />
     </div>

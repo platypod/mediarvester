@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import get_current_user
+from api.deps import get_current_user, is_admin
 from db import get_session
 from services.downloader import COOKIES_ROOT
 from services.service_status import compute_service_status
@@ -19,6 +19,7 @@ GITHUB_URL = "https://github.com/platypod/mediarvester"
 
 class MeRead(BaseModel):
     user: str
+    is_admin: bool
 
 
 class VersionInfo(BaseModel):
@@ -37,8 +38,8 @@ class CookiesStatus(BaseModel):
 
 
 @router.get("/me", response_model=MeRead)
-async def get_me(user: str = Depends(get_current_user)):
-    return {"user": user}
+async def get_me(user: str = Depends(get_current_user), admin: bool = Depends(is_admin)):
+    return {"user": user, "is_admin": admin}
 
 
 @router.get("/cookies", response_model=CookiesStatus)

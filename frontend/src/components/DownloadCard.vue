@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import type { Download } from '../stores/downloads'
 
-defineProps<{ download: Download }>()
+defineProps<{ download: Download; showOwner?: boolean }>()
 defineEmits<{ delete: [] }>()
 
 const showCompleted = ref(false)
@@ -24,6 +24,13 @@ function formatTime(iso: string): string {
     <div class="flex items-start gap-3">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2 flex-wrap mb-1">
+          <span
+            v-if="showOwner"
+            class="text-xs bg-purple-900/60 text-purple-300 px-2 py-0.5 rounded"
+            title="Owner (visible to admins only)"
+          >
+            {{ download.owner }}
+          </span>
           <span v-if="download.platform" class="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded">
             {{ download.platform }}
           </span>

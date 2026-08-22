@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MediaItem } from '../stores/media'
 
-defineProps<{ item: MediaItem }>()
+defineProps<{ item: MediaItem; showOwner?: boolean }>()
 defineEmits<{ delete: [] }>()
 
 function formatDuration(s: number | null): string {
@@ -45,9 +45,18 @@ function formatDuration(s: number | null): string {
           ×
         </button>
       </div>
-      <span v-if="item.platform" class="mt-1 inline-block text-xs bg-gray-700 text-gray-400 px-2 py-0.5 rounded">
-        {{ item.platform }}
-      </span>
+      <div class="mt-1 flex items-center gap-1.5 flex-wrap">
+        <span
+          v-if="showOwner"
+          class="inline-block text-xs bg-purple-900/60 text-purple-300 px-2 py-0.5 rounded"
+          title="Owner (visible to admins only)"
+        >
+          {{ item.owner }}
+        </span>
+        <span v-if="item.platform" class="inline-block text-xs bg-gray-700 text-gray-400 px-2 py-0.5 rounded">
+          {{ item.platform }}
+        </span>
+      </div>
     </div>
   </div>
 </template>

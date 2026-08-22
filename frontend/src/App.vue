@@ -60,6 +60,13 @@ onMounted(() => {
           {{ settings.user[0]?.toUpperCase() }}
         </div>
         <span class="text-xs text-gray-500 truncate">{{ settings.user }}</span>
+        <span
+          v-if="settings.isAdmin"
+          class="text-xs bg-purple-900/60 text-purple-300 px-1.5 py-0.5 rounded flex-shrink-0"
+          title="You can see and manage every user's downloads, sources, and library"
+        >
+          admin
+        </span>
       </div>
 
       <!-- Version / GitHub -->

@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import get_current_user
+from api.deps import get_current_user, is_admin
 from db import MediaItem, get_session
 
 router = APIRouter(prefix="/api/media", tags=["media"])
@@ -27,9 +27,12 @@ class MediaRead(BaseModel):
 async def list_media(
     platform: str | None = None,
     owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    q = select(MediaItem).where(MediaItem.owner == owner).order_by(MediaItem.created_at.desc())
+    q = select(MediaItem).order_by(MediaItem.created_at.desc())
+    if not admin:
+        q = q.where(MediaItem.owner == owner)
     if platform:
         q = q.where(MediaItem.platform == platform)
     result = await session.execute(q)
@@ -40,10 +43,11 @@ async def list_media(
 async def delete_media(
     media_id: int,
     owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
     session: AsyncSession = Depends(get_session),
 ):
     item = await session.get(MediaItem, media_id)
-    if not item or item.owner != owner:
+    if not item or (item.owner != owner and not admin):
         raise HTTPException(status_code=404)
     await session.delete(item)
     await session.commit()

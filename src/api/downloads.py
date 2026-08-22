@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import get_current_user
+from api.deps import get_current_user, is_admin
 from db import Download, MediaItem, async_session, get_session
 from services.downloader import downloader, is_probably_collection_url
 
@@ -111,9 +111,12 @@ async def create_download(
 async def list_downloads(
     status: str | None = None,
     owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    q = select(Download).where(Download.owner == owner).order_by(Download.created_at.desc())
+    q = select(Download).order_by(Download.created_at.desc())
+    if not admin:
+        q = q.where(Download.owner == owner)
     if status:
         q = q.where(Download.status.in_(status.split(",")))
     result = await session.execute(q)
@@ -124,10 +127,11 @@ async def list_downloads(
 async def delete_download(
     download_id: int,
     owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
     session: AsyncSession = Depends(get_session),
 ):
     dl = await session.get(Download, download_id)
-    if not dl or dl.owner != owner:
+    if not dl or (dl.owner != owner and not admin):
         raise HTTPException(status_code=404)
     media_items = (
         await session.execute(select(MediaItem).where(MediaItem.download_id == download_id))
@@ -144,12 +148,13 @@ async def delete_download(
 async def download_progress(
     download_id: int,
     owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
 ):
     async def stream():
         while True:
             async with async_session() as session:
                 row = await session.get(Download, download_id)
-            if not row or row.owner != owner:
+            if not row or (row.owner != owner and not admin):
                 break
             payload = {
                 "progress": row.progress,
