@@ -308,3 +308,28 @@ async def test_on_error_leaves_retry_at_none_when_cap_reached(session, make_down
     await downloader._on_error(dl.id, "some error")
     await session.refresh(dl)
     assert dl.retry_at is None
+
+
+def test_log_adapter_remembers_the_last_error_for_the_generic_failure_message():
+    # 2026-08-22 fix: ignoreerrors=True means extract_info() returning
+    # falsy has no exception to inspect -- the *real* reason (rate-limited,
+    # 403, a specific format unavailable...) only ever existed as a log
+    # line via this adapter. Without capturing it here, both the final log
+    # line and the DB's error column (what the UI actually shows) end up
+    # with nothing more specific than "no media extracted for <url>".
+    from services.downloader import _YtDlpLogAdapter
+
+    adapter = _YtDlpLogAdapter(download_id=1)
+    assert adapter.last_error is None
+    adapter.warning("Requested format is not available")
+    assert adapter.last_error == "Requested format is not available"
+    adapter.error("[youtube] abc123: rate-limited by YouTube for up to an hour")
+    assert adapter.last_error == "[youtube] abc123: rate-limited by YouTube for up to an hour"
+
+
+def test_log_adapter_debug_messages_do_not_count_as_the_last_error():
+    from services.downloader import _YtDlpLogAdapter
+
+    adapter = _YtDlpLogAdapter(download_id=1)
+    adapter.debug("[youtube] Extracting URL: https://example.com")
+    assert adapter.last_error is None

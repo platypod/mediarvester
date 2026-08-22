@@ -85,10 +85,19 @@ class _YtDlpLogAdapter:
     warnings/errors). Without this, per-entry failure reasons ("Requested
     format is not available", 403s, etc.) are invisible to LOG_LEVEL and
     impossible to correlate with a download id.
+
+    Also remembers the last warning/error it saw (`last_error`) -- when
+    `ignoreerrors=True` swallows a per-entry failure, yt-dlp's own
+    extract_info() just returns a falsy result with no exception at all, so
+    the real reason (rate-limited, 403, a specific format unavailable...)
+    would otherwise only ever exist as this log line, disconnected from the
+    generic "no media extracted for <url>" that actually reaches the DB's
+    error column and the UI. _run folds it back in when that happens.
     """
 
     def __init__(self, download_id: int) -> None:
         self._download_id = download_id
+        self.last_error: str | None = None
 
     def debug(self, msg: str) -> None:
         # yt-dlp routes its normal status/progress chatter here too (as
@@ -97,9 +106,11 @@ class _YtDlpLogAdapter:
         logger.debug("download %d: %s", self._download_id, msg)
 
     def warning(self, msg: str) -> None:
+        self.last_error = msg
         logger.warning("download %d: %s", self._download_id, msg)
 
     def error(self, msg: str) -> None:
+        self.last_error = msg
         logger.error("download %d: %s", self._download_id, msg)
 
 
@@ -463,19 +474,31 @@ class Downloader:
                             download_id, exc,
                         )
 
-                opts = self._build_opts(download_id, owner, force, playlist_items, folder_hint)
+                log_adapter = _YtDlpLogAdapter(download_id)
+                opts = self._build_opts(download_id, owner, force, playlist_items, folder_hint, log_adapter)
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                 if not info:
                     # ignoreerrors makes yt-dlp swallow a total failure on a single
                     # item (e.g. rate-limited/unavailable video) and return None
-                    # instead of raising -- don't record that as a success.
-                    raise yt_dlp.utils.DownloadError(f"no media extracted for {url}")
+                    # instead of raising -- don't record that as a success. yt-dlp
+                    # itself never raises here, so the *real* reason (rate-limited,
+                    # 403, a specific format unavailable...) only ever existed as a
+                    # log line via log_adapter -- fold it back in, or this and the
+                    # DB's error column both end up with nothing more specific than
+                    # "no media extracted for <url>".
+                    reason = log_adapter.last_error
+                    message = f"no media extracted for {url}"
+                    if reason:
+                        message = f"{message}: {reason}"
+                    raise yt_dlp.utils.DownloadError(message)
                 platform = info.get("extractor") or "unknown"
                 status = "done"
                 self._schedule(self._on_success(download_id, info, owner))
             except Exception as exc:
-                logger.error("download %d failed: %s", download_id, exc)
+                logger.error(
+                    "download %d failed (owner=%s, url=%s): %s", download_id, owner, url, exc
+                )
                 span.record_exception(exc)
                 span.set_status(Status(StatusCode.ERROR, str(exc)))
                 self._schedule(self._on_error(download_id, str(exc)))
@@ -497,6 +520,7 @@ class Downloader:
         force: bool = False,
         playlist_items: str | None = None,
         folder_hint: str | None = None,
+        log_adapter: "_YtDlpLogAdapter | None" = None,
     ) -> dict:
         # A folder_hint (set by the poller when a newly-discovered video
         # matches an already-downloaded playlist -- see poller.py) replaces
@@ -560,7 +584,7 @@ class Downloader:
             # Routes all of yt-dlp's own reporting (including what quiet/
             # no_warnings would otherwise suppress or print raw to stderr)
             # through our logger instead -- see _YtDlpLogAdapter.
-            "logger": _YtDlpLogAdapter(download_id),
+            "logger": log_adapter or _YtDlpLogAdapter(download_id),
             "quiet": True,
             "noprogress": True,
             # See services/poller.py -- unthrottled per-entry requests (e.g. a
@@ -850,6 +874,10 @@ class Downloader:
                 dl.current_title = None
                 dl.retry_at = self._compute_retry_at(dl.retry_count)
                 await session.commit()
+                logger.error(
+                    "download %d recorded as error -- %r (creator=%s, platform=%s, owner=%s, url=%s): %s",
+                    download_id, title or "(untitled)", dl.creator, dl.platform, dl.owner, dl.url, error,
+                )
                 self._schedule_retries(
                     download_id,
                     [{"webpage_url": dl.url, "title": title}],
