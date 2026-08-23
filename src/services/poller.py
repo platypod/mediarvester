@@ -9,7 +9,13 @@ from sqlalchemy import func, select
 from yt_dlp.utils import RejectedVideoReached
 
 from db import Download, MediaItem, Source, async_session
-from services.downloader import downloader, get_cookies_path, is_probably_collection_url, matching_known_playlist
+from services.downloader import (
+    downloader,
+    get_cookies_path,
+    is_probably_collection_url,
+    matching_known_playlist,
+    recover_missed_retries,
+)
 from services.service_status import compute_service_status
 from services.telemetry import create_cached_gauge, meter, propagate_context, tracer
 
@@ -329,5 +335,16 @@ async def init_scheduler() -> None:
             # Don't run_now on startup — sources already have last_polled_at set
             schedule_source(source, run_now=False)
     scheduler.add_job(_refresh_gauges, "interval", seconds=60, id="refresh_gauges", next_run_time=datetime.now(timezone.utc))
+    # recover_missed_retries also runs once at startup (main.py's lifespan) --
+    # that alone only catches a retry_at that already elapsed by the moment
+    # the process comes up. A redeploy landing *before* retry_at but after
+    # the previous process (and its in-memory asyncio sleep task) is gone
+    # gets missed by both: the old task is dead, and the new process's
+    # one-shot check still sees retry_at in the future. Nothing ever
+    # revisited it again after that -- confirmed happening for real
+    # (owner=reivi, 2026-08-22: two auto-retries stuck for 23+ hours with
+    # no error, no log, nothing). Running this on an interval closes that
+    # gap; it's a cheap no-op query when there's nothing to recover.
+    scheduler.add_job(recover_missed_retries, "interval", minutes=5, id="recover_missed_retries")
     scheduler.start()
     logger.info("scheduler started")

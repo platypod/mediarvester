@@ -13,6 +13,11 @@ intended fallback for that case: it's populated whenever the download came
 from a playlist/channel-tab context, which titles-with-a-bare-number tend to
 rely on anyway (no in-title marker because the platform's own ordering was
 assumed to be enough).
+
+A trailing "#N" (e.g. "... Run Lore #21") IS treated as a marker despite
+having no word attached -- "#" ahead of a number is specifically an episode/
+part indicator in creator titles and doesn't collide with years or quality
+tags the way a bare number does, so it's safe to trust anchored at the end.
 """
 
 import re
@@ -20,6 +25,13 @@ import re
 _MARKER_PATTERNS = [
     re.compile(r"\s*-?\s*\b[ée]pisode\s*#?\s*(\d{1,4})\b", re.IGNORECASE),
     re.compile(r"\s*-?\s*\b[ée]p\.?\s*#?\s*(\d{1,4})\b", re.IGNORECASE),
+    # A trailing "#N" with no marker word at all (e.g. "... Run Lore #21").
+    # Restricted to the end of the title (unlike the bare-number case the
+    # module docstring rules out) because "#" is specifically an episode/part
+    # marker in creator titles, not something a year or quality tag ever
+    # collides with -- so anchoring it there is enough to stay safe without
+    # needing a marker word.
+    re.compile(r"\s*-?\s*#\s*(\d{1,4})\s*$"),
 ]
 
 

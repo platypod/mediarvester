@@ -76,6 +76,25 @@ def test_missing_title_does_not_raise():
     assert resolve_episode({}) is None
 
 
+def test_trailing_hash_number_is_treated_as_an_episode_marker():
+    # This creator's "Run Lore" sub-series has no "episode"/"ep" word at all,
+    # just a trailing "#N" -- confirmed missed in production (2026-08-22),
+    # leaving a whole sub-series unrenamed.
+    info = {"title": "Farum Azula, perdu dans le Temps - Elden Ring Run Lore #21"}
+    assert resolve_episode(info) == (21, "Farum Azula, perdu dans le Temps - Elden Ring Run Lore")
+
+
+def test_trailing_hash_number_with_no_preceding_dash():
+    info = {"title": "Il fait chaud là-dedans non ? Elden Ring Run Lore #13"}
+    assert resolve_episode(info) == (13, "Il fait chaud là-dedans non ? Elden Ring Run Lore")
+
+
+def test_hash_number_not_at_end_is_not_treated_as_an_episode_marker():
+    # A mid-title "#N" (a real hashtag, a rank, ...) is not anchored to the
+    # end and should not be trusted the same way.
+    assert resolve_episode({"title": "My #1 Favorite Game - Highlights"}) is None
+
+
 def test_marker_trims_everything_from_the_match_onward():
     # The dash-prefixed marker and anything after it is redundant once the
     # number becomes a filename prefix -- confirm the whole tail is dropped,
