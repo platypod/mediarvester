@@ -164,6 +164,40 @@ async def test_entry_creator_resolves_via_channel_field_fallback(session, make_d
     assert result == "Elden Ring avec Deriv"
 
 
+async def test_playlist_row_still_matches_after_many_newer_episode_downloads(
+    session, make_download, monkeypatch
+):
+    # 2026-08-23 bug: the candidate query used to cap at the 20
+    # most-recently-finished `done` rows for the creator *before* filtering
+    # down to actual collection URLs -- a playlist's own marker row only
+    # gets one finished_at (when the collection itself was downloaded), so
+    # once 20+ individual episodes from that creator finished afterward, the
+    # marker row silently fell out of the window and every later video from
+    # that creator landed loose in the flat root folder again, with no
+    # error anywhere. Confirmed happening for real (MrDeriv, both "Elden
+    # Ring" and "Kingdom Come..." went stale this way).
+    await make_download(
+        session,
+        url="https://youtube.com/playlist?list=PL1",
+        status="done",
+        creator="MrDeriv",
+        title="Elden Ring",
+        finished_at=datetime(2026, 8, 22, 8, 58, 0),
+    )
+    for i in range(25):
+        await make_download(
+            session,
+            url=f"https://example.com/episode-{i}",
+            status="done",
+            creator="MrDeriv",
+            title=f"Episode {i}",
+            finished_at=datetime(2026, 8, 22, 9, 0, 0),
+        )
+    monkeypatch.setattr(downloader_module, "extract_flat_entries", lambda url, owner: [{"id": "abc123"}])
+    result = await matching_known_playlist("reivi", {"id": "abc123", "uploader": "MrDeriv"})
+    assert result == "Elden Ring"
+
+
 async def test_matching_is_scoped_to_the_requesting_owner(session, make_download, monkeypatch):
     # Another owner's completed playlist from the same creator name must not
     # leak a folder_hint into a different owner's download -- each owner's

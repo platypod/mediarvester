@@ -214,6 +214,22 @@ async def matching_known_playlist(owner: str, entry: dict) -> str | None:
     only fires, and only costs anything, when the creator has at least one
     completed collection download on record; it stops at the first match
     rather than checking every known playlist.
+
+    The candidate query intentionally has no small limit: it used to cap at
+    the 20 most-recently-finished `done` rows for the creator, filtering
+    down to actual collection URLs only *after* that cap -- fine while a
+    creator has few individual-episode downloads, but a collection's own
+    marker row only gets a fresh finished_at once (when the collection
+    itself was downloaded), while every episode pulled from it afterward
+    adds another `done` row with a later finished_at. Confirmed happening
+    for real: MrDeriv accumulated enough individual-episode downloads after
+    the "Elden Ring"/"Kingdom Come..." playlist rows that both fell out of
+    the top 20 entirely, silently breaking folder-matching for any further
+    video from those creators with no error or log line anywhere (2026-08-23).
+    A large-but-bounded cap keeps this query cheap (single indexed lookup)
+    while not silently going stale as a library grows -- the actual cost
+    here (a network call per distinct playlist candidate) is governed by
+    how many *distinct* playlists a creator has, not by this row count.
     """
     video_id = entry.get("id")
     creator = entry.get("uploader") or entry.get("channel") or entry.get("creator")
@@ -227,7 +243,7 @@ async def matching_known_playlist(owner: str, entry: dict) -> str | None:
             .where(Download.creator == creator)
             .where(Download.status == "done")
             .order_by(Download.finished_at.desc())
-            .limit(20)
+            .limit(500)
         )
         rows = result.all()
 
