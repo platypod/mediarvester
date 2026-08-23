@@ -98,6 +98,17 @@ async def test_dedup_is_scoped_per_owner(client, enqueued, session, make_downloa
     assert len(enqueued) == 1
 
 
+async def test_resubmitting_a_failed_url_supersedes_the_old_error_row(client, enqueued, session, make_download):
+    # A manual resubmit of a previously-failed URL is itself a new attempt --
+    # the old row should stop showing as a live "error" once this one exists,
+    # same as an auto-retry does.
+    failed = await make_download(session, url="https://example.com/v1", owner="reivi", status="error")
+    resp = await client.post("/api/downloads", json={"url": "https://example.com/v1"}, headers=_headers())
+    assert resp.status_code == 201
+    await session.refresh(failed)
+    assert failed.status == "retried"
+
+
 async def test_list_downloads_only_returns_the_requesting_owners_rows(client, session, make_download):
     await make_download(session, url="https://example.com/mine", owner="reivi")
     await make_download(session, url="https://example.com/not-mine", owner="someone_else")

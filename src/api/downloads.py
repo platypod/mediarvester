@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, is_admin
 from db import Download, MediaItem, async_session, get_session
-from services.downloader import downloader, is_probably_collection_url
+from services.downloader import downloader, is_probably_collection_url, supersede_error_rows
 
 logger = getLogger(__name__)
 
@@ -99,6 +99,8 @@ async def create_download(
         session.add(dl)
         await session.commit()
         await session.refresh(dl)
+        await supersede_error_rows(session, dl.url, owner, dl.id)
+        await session.commit()
         downloader.enqueue(dl.id, dl.url, owner)
         logger.info("download %d queued by %s: %s", dl.id, owner, dl.url)
         return dl

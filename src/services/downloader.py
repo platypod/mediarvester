@@ -15,7 +15,7 @@ import yt_dlp
 from opentelemetry.metrics import Observation
 from opentelemetry.trace import Status, StatusCode
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from db import Download, MediaItem, async_session
 from services.episode_naming import resolve_episode
@@ -64,6 +64,22 @@ _downloads_active = meter.create_up_down_counter(
 # block -- has actually cleared by the time they fire.
 _MAX_AUTO_RETRIES = 4
 _RETRY_DELAYS_SECONDS = [120, 1800, 3 * 3600, 24 * 3600]  # 2min, 30min, 3h, 1d
+
+
+async def supersede_error_rows(session, url: str, owner: str, exclude_id: int) -> None:
+    """Mark this owner's earlier failed attempts at `url` as "retried" now
+    that a newer attempt (auto-retry, missed-retry recovery, or a manual
+    resubmit) exists for it -- an "error" filter should only ever show the
+    one attempt that's actually still unresolved, not the whole retry
+    history piling up as separate rows (each retry already gets its own row
+    by design, so the history was otherwise never pruned until something
+    finally succeeded). `_on_success`'s cleanup still deletes "retried" rows
+    outright once that happens. Caller commits."""
+    await session.execute(
+        update(Download)
+        .where(Download.url == url, Download.owner == owner, Download.status == "error", Download.id != exclude_id)
+        .values(status="retried")
+    )
 
 
 def is_probably_collection_url(url: str) -> bool:
@@ -472,15 +488,35 @@ class Downloader:
                     # made a mess of MrDeriv's library (2026-08-21).
                     try:
                         entry_info = _flat_extract_info(url, owner)
-                        folder_hint = asyncio.run_coroutine_threadsafe(
-                            matching_known_playlist(owner, entry_info), self._loop
-                        ).result(timeout=30)
                     except Exception as exc:
                         logger.debug(
-                            "download %d: could not check playlist membership, "
+                            "download %d: could not pre-fetch metadata, "
                             "continuing without a folder hint: %s",
                             download_id, exc,
                         )
+                        entry_info = {}
+                    if entry_info.get("title"):
+                        # Stashed now, ahead of the real download attempt, so a
+                        # row that fails before yt-dlp's progress hook ever
+                        # fires (e.g. an immediate rate-limit) still has a
+                        # human-readable title instead of a bare URL --
+                        # dl.title is only ever set on success otherwise, and
+                        # current_title (the other fallback _on_error checks)
+                        # would stay empty for exactly this case.
+                        asyncio.run_coroutine_threadsafe(
+                            self._set_current_title(download_id, entry_info["title"]), self._loop
+                        )
+                    if entry_info:
+                        try:
+                            folder_hint = asyncio.run_coroutine_threadsafe(
+                                matching_known_playlist(owner, entry_info), self._loop
+                            ).result(timeout=30)
+                        except Exception as exc:
+                            logger.debug(
+                                "download %d: could not check playlist membership, "
+                                "continuing without a folder hint: %s",
+                                download_id, exc,
+                            )
 
                 log_adapter = _YtDlpLogAdapter(download_id)
                 opts = self._build_opts(download_id, owner, force, playlist_items, folder_hint, log_adapter)
@@ -703,6 +739,13 @@ class Downloader:
                         )
             await session.commit()
 
+    async def _set_current_title(self, download_id: int, title: str) -> None:
+        async with async_session() as session:
+            dl = await session.get(Download, download_id)
+            if dl and not dl.current_title:
+                dl.current_title = title
+                await session.commit()
+
     async def _on_success(self, download_id: int, info: dict, owner: str) -> None:
         async with async_session() as session:
             dl = await session.get(Download, download_id)
@@ -780,16 +823,18 @@ class Downloader:
             await session.commit()
 
             # A resubmit of the same URL just succeeded -- any earlier failed
-            # attempts at it (manual retries or exhausted auto-retries alike)
-            # are no longer telling the truth about the current state, so drop
-            # them instead of leaving stale "error" rows for something that's
-            # actually fine now. Error rows never have MediaItems attached, so
-            # this can't orphan anything.
+            # attempts at it (manual retries or exhausted auto-retries alike,
+            # including ones already downgraded to "retried" by
+            # supersede_error_rows once a newer attempt existed) are no
+            # longer telling the truth about the current state, so drop them
+            # instead of leaving stale rows for something that's actually
+            # fine now. Neither status ever has MediaItems attached, so this
+            # can't orphan anything.
             result = await session.execute(
                 delete(Download).where(
                     Download.url == dl.url,
                     Download.owner == owner,
-                    Download.status == "error",
+                    Download.status.in_(("error", "retried")),
                     Download.id != download_id,
                 )
             )
@@ -962,6 +1007,8 @@ class Downloader:
             session.add(dl)
             await session.commit()
             await session.refresh(dl)
+            await supersede_error_rows(session, url, owner, dl.id)
+            await session.commit()
         logger.info("download %d: auto-retry attempt %d for %s", dl.id, retry_count, url)
         self.enqueue(dl.id, url, owner)
 
@@ -1122,6 +1169,8 @@ async def recover_missed_retries() -> None:
             session.add(retry_dl)
             await session.commit()
             await session.refresh(retry_dl)
+            await supersede_error_rows(session, url, owner, retry_dl.id)
+            await session.commit()
         downloader.enqueue(retry_dl.id, url, owner)
 
     if rows:

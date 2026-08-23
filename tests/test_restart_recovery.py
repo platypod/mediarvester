@@ -82,6 +82,9 @@ async def test_recover_missed_retries_refires_a_past_due_retry(session, make_dow
     new_row = next(r for r in rows if r.id != dl.id)
     assert new_row.retry_count == 2  # dl.retry_count(1) + 1
 
+    await session.refresh(dl)
+    assert dl.status == "retried"  # no longer shows as a live "error" once its own recovery exists
+
 
 async def test_recover_missed_retries_ignores_a_retry_not_yet_due(session, make_download, monkeypatch):
     await make_download(

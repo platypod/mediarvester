@@ -8,7 +8,7 @@ export interface Download {
   title: string | null
   platform: string | null
   creator: string | null
-  status: 'queued' | 'downloading' | 'done' | 'error'
+  status: 'queued' | 'downloading' | 'done' | 'error' | 'retried'
   progress: number
   error: string | null
   owner: string

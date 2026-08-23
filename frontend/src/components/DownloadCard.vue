@@ -12,6 +12,12 @@ const statusClass: Record<string, string> = {
   downloading: 'bg-blue-900/60 text-blue-300',
   done: 'bg-green-900/60 text-green-300',
   error: 'bg-red-900/60 text-red-300',
+  // A failed attempt superseded by a newer one for the same URL (an
+  // auto-retry, a missed-retry recovery, or a manual resubmit) -- kept
+  // around as history rather than deleted outright, but deliberately muted
+  // so it doesn't read as a live, unresolved error alongside the one that
+  // actually is.
+  retried: 'bg-gray-700 text-gray-400',
 }
 
 function formatTime(iso: string): string {

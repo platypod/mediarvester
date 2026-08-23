@@ -12,7 +12,7 @@ const submitting = ref(false)
 const formError = ref('')
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
-const STATUSES = ['queued', 'downloading', 'done', 'error'] as const
+const STATUSES = ['queued', 'downloading', 'done', 'error', 'retried'] as const
 
 const search = ref('')
 const statusFilter = ref<Set<(typeof STATUSES)[number]>>(new Set())

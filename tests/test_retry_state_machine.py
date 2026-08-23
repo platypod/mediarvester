@@ -22,6 +22,8 @@ from services.downloader import (
     _RETRY_DELAYS_SECONDS,
     Downloader,
 )
+from db import Download
+from sqlalchemy import select
 
 
 @pytest.fixture
@@ -122,6 +124,39 @@ async def test_falls_back_to_plain_url_field_when_no_webpage_url(dl, monkeypatch
 
 async def _noop_coro():
     return None
+
+
+async def test_retry_after_delay_supersedes_the_row_it_retries(dl, session, make_download, monkeypatch):
+    # A failed row should stop showing as "error" once its own retry exists
+    # -- an "error" filter in the UI should only ever surface the one
+    # attempt that's still actually unresolved, not the whole retry history
+    # (each retry is deliberately its own row -- see _schedule_retries).
+    failed = await make_download(session, url="https://example.com/v1", status="error", retry_count=0)
+    monkeypatch.setattr(dl, "enqueue", lambda *a, **kw: None)
+
+    await dl._retry_after_delay("https://example.com/v1", "reivi", None, 1, 0, title="Some Video")
+
+    await session.refresh(failed)
+    assert failed.status == "retried"
+
+    rows = (await session.execute(select(Download).where(Download.url == "https://example.com/v1"))).scalars().all()
+    assert len(rows) == 2
+    new_row = next(r for r in rows if r.id != failed.id)
+    assert new_row.status != "retried"  # the new attempt itself must be untouched
+
+
+async def test_retry_after_delay_does_not_touch_a_different_owners_error_row(
+    dl, session, make_download, monkeypatch
+):
+    other_owner_row = await make_download(
+        session, url="https://example.com/v1", owner="someone_else", status="error"
+    )
+    monkeypatch.setattr(dl, "enqueue", lambda *a, **kw: None)
+
+    await dl._retry_after_delay("https://example.com/v1", "reivi", None, 1, 0)
+
+    await session.refresh(other_owner_row)
+    assert other_owner_row.status == "error"
 
 
 def test_retry_schedule_reaches_well_past_youtubes_own_rate_limit_window():

@@ -241,6 +241,36 @@ async def test_success_clears_stale_error_rows_for_the_same_url_and_owner(
     assert other_owner_error.id in remaining_ids
 
 
+async def test_success_also_clears_rows_already_downgraded_to_retried(
+    session, make_download, tmp_path, monkeypatch
+):
+    # supersede_error_rows downgrades a superseded failure's status from
+    # "error" to "retried" as soon as its own retry exists -- confirm that
+    # eventual success still sweeps those up too, not just plain "error"
+    # rows, so no trace of the failed history lingers either way.
+    monkeypatch.setattr(downloader_module, "MEDIA_ROOT", str(tmp_path))
+    url = "https://www.youtube.com/watch?v=abc123"
+    retried = await make_download(session, url=url, status="retried", owner="reivi")
+    dl = await make_download(session, url=url, owner="reivi")
+
+    video_path = tmp_path / "MrDeriv" / "Some Video.mp4"
+    _write(video_path)
+    info = {
+        "title": "Some Video",
+        "requested_downloads": [{"filepath": str(video_path)}],
+        "webpage_url": url,
+    }
+    downloader = Downloader()
+    await downloader._on_success(dl.id, info, "reivi")
+
+    from db import Download
+    from sqlalchemy import select
+
+    remaining_ids = {row.id for row in (await session.execute(select(Download.id))).all()}
+    assert retried.id not in remaining_ids
+    assert dl.id in remaining_ids
+
+
 async def test_success_does_not_touch_other_urls_error_rows(session, make_download, tmp_path, monkeypatch):
     monkeypatch.setattr(downloader_module, "MEDIA_ROOT", str(tmp_path))
     unrelated = await make_download(
@@ -333,3 +363,24 @@ def test_log_adapter_debug_messages_do_not_count_as_the_last_error():
     adapter = _YtDlpLogAdapter(download_id=1)
     adapter.debug("[youtube] Extracting URL: https://example.com")
     assert adapter.last_error is None
+
+
+async def test_set_current_title_populates_an_empty_title(session, make_download):
+    # A row that fails before yt-dlp's progress hook ever fires (e.g. an
+    # immediate rate-limit) previously had no title at all -- _run now
+    # pre-fetches and stashes one from cheap flat metadata before the real
+    # download attempt, so _on_error's fallback (dl.title or
+    # dl.current_title) has something to show instead of a bare URL.
+    dl = await make_download(session, url="https://example.com/v1")
+    downloader = Downloader()
+    await downloader._set_current_title(dl.id, "Some Video")
+    await session.refresh(dl)
+    assert dl.current_title == "Some Video"
+
+
+async def test_set_current_title_does_not_clobber_an_existing_title(session, make_download):
+    dl = await make_download(session, url="https://example.com/v1", current_title="Already Known")
+    downloader = Downloader()
+    await downloader._set_current_title(dl.id, "Something Else")
+    await session.refresh(dl)
+    assert dl.current_title == "Already Known"
