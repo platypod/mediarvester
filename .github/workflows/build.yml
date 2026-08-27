@@ -36,7 +36,22 @@ jobs:
 
       - name: Extract tag
         id: tag
-        run: echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+        run: |
+          version="${GITHUB_REF_NAME}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Only move :latest for a clean release (no "-" prerelease suffix,
+          # e.g. a "-dev" tag) -- otherwise a prerelease build pushed to feed
+          # local's prerelease-admitting ImagePolicy would overwrite :latest
+          # for anything pulling it directly (e.g. this repo's own
+          # docker-compose.yaml), bypassing the pinned-tag path entirely.
+          {
+            echo "tags<<EOF"
+            echo "ghcr.io/platypod/mediarvester:$version"
+            if [[ "$version" != *-* ]]; then
+              echo "ghcr.io/platypod/mediarvester:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -44,6 +59,4 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/platypod/mediarvester:${{ steps.tag.outputs.version }}
-            ghcr.io/platypod/mediarvester:latest
+          tags: ${{ steps.tag.outputs.tags }}
