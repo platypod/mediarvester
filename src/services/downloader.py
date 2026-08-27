@@ -363,6 +363,26 @@ def _apply_episode_prefix(abs_path: str, entry: dict) -> str:
     return str(new_path)
 
 
+def _extract_media_profile(entry: dict, requested: list[dict]) -> dict:
+    """Pull resolution + audio profile off yt-dlp's own post-extraction info,
+    not by re-probing the file. `requested` (entry["requested_downloads"])
+    holds one dict per format actually fetched -- two entries for a
+    bestvideo+bestaudio merge (one video-only, one audio-only), a single
+    entry already carrying both for an already-muxed format. Which slot
+    holds which stream isn't guaranteed, so pick by codec rather than
+    position; entry itself is the fallback for a shape this doesn't expect
+    rather than leaving every field None."""
+    video_fmt = next((r for r in requested if r.get("vcodec") not in (None, "none")), entry)
+    audio_fmt = next((r for r in requested if r.get("acodec") not in (None, "none")), entry)
+    return {
+        "width": video_fmt.get("width") or entry.get("width"),
+        "height": video_fmt.get("height") or entry.get("height"),
+        "vcodec": video_fmt.get("vcodec") if video_fmt.get("vcodec") not in (None, "none") else None,
+        "acodec": audio_fmt.get("acodec") if audio_fmt.get("acodec") not in (None, "none") else None,
+        "abr": audio_fmt.get("abr") or entry.get("abr"),
+    }
+
+
 def _verify_downloaded_file(path: str, expected_duration: float | None) -> str | None:
     """Confirm a file yt-dlp reported as finished is actually a complete,
     readable media file -- not a truncated write (disk full mid-merge, a
@@ -916,6 +936,8 @@ class Downloader:
                 thumbnail_path = os.path.relpath(str(candidate), MEDIA_ROOT)
                 break
 
+        profile = _extract_media_profile(entry, requested)
+
         return MediaItem(
             title=entry.get("title") or fallback_url,
             platform=entry.get("extractor"),
@@ -925,6 +947,7 @@ class Downloader:
             duration_seconds=entry.get("duration"),
             owner=owner,
             download_id=download_id,
+            **profile,
         )
 
     async def _on_error(self, download_id: int, error: str) -> None:

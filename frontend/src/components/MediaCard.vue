@@ -12,6 +12,19 @@ function formatDuration(s: number | null): string {
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
   return `${m}:${String(sec).padStart(2, '0')}`
 }
+
+function formatResolution(item: MediaItem): string {
+  if (item.height) return `${item.height}p`
+  if (item.width && item.height) return `${item.width}x${item.height}`
+  return ''
+}
+
+function formatAudio(item: MediaItem): string {
+  if (!item.acodec) return ''
+  const codec = item.acodec.split('.')[0] // e.g. "mp4a.40.2" -> "mp4a"
+  if (item.abr) return `${codec} ${Math.round(item.abr)}k`
+  return codec
+}
 </script>
 
 <template>
@@ -55,6 +68,18 @@ function formatDuration(s: number | null): string {
         </span>
         <span v-if="item.platform" class="inline-block text-xs bg-gray-700 text-gray-400 px-2 py-0.5 rounded">
           {{ item.platform }}
+        </span>
+        <span
+          v-if="formatResolution(item)"
+          class="inline-block text-xs bg-gray-700 text-gray-400 px-2 py-0.5 rounded"
+        >
+          {{ formatResolution(item) }}
+        </span>
+        <span
+          v-if="formatAudio(item)"
+          class="inline-block text-xs bg-gray-700 text-gray-400 px-2 py-0.5 rounded"
+        >
+          {{ formatAudio(item) }}
         </span>
       </div>
     </div>

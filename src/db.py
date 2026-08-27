@@ -102,6 +102,15 @@ class MediaItem(Base):
     owner: Mapped[str] = mapped_column(default="anonymous", server_default="anonymous")
     download_id: Mapped[int] = mapped_column(ForeignKey("download.id"))
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    # Video/audio profile of the downloaded file, read off yt-dlp's own
+    # post-extraction info (services/downloader.py's _extract_media_profile) --
+    # not re-probed from the file, so a format yt-dlp doesn't report on (rare)
+    # just leaves these None rather than failing the download.
+    width: Mapped[int | None]
+    height: Mapped[int | None]
+    vcodec: Mapped[str | None]
+    acodec: Mapped[str | None]
+    abr: Mapped[float | None]
 
 
 async def get_session():
@@ -170,3 +179,14 @@ async def create_all() -> None:
     except (OperationalError, ProgrammingError):
         async with engine.begin() as conn:
             await conn.execute(text("ALTER TABLE download ADD COLUMN folder_hint TEXT"))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT width FROM media_item LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE media_item ADD COLUMN width INTEGER"))
+            await conn.execute(text("ALTER TABLE media_item ADD COLUMN height INTEGER"))
+            await conn.execute(text("ALTER TABLE media_item ADD COLUMN vcodec TEXT"))
+            await conn.execute(text("ALTER TABLE media_item ADD COLUMN acodec TEXT"))
+            await conn.execute(text("ALTER TABLE media_item ADD COLUMN abr FLOAT"))

@@ -19,6 +19,11 @@ class MediaRead(BaseModel):
     duration_seconds: int | None
     owner: str
     download_id: int
+    width: int | None
+    height: int | None
+    vcodec: str | None
+    acodec: str | None
+    abr: float | None
 
     model_config = {"from_attributes": True}
 

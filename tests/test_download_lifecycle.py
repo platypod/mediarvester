@@ -384,3 +384,74 @@ async def test_set_current_title_does_not_clobber_an_existing_title(session, mak
     await downloader._set_current_title(dl.id, "Something Else")
     await session.refresh(dl)
     assert dl.current_title == "Already Known"
+
+
+async def test_media_item_captures_profile_from_a_merged_video_audio_download(
+    session, make_download, tmp_path, monkeypatch
+):
+    # bestvideo+bestaudio: requested_downloads has one video-only and one
+    # audio-only format dict pre-merge -- which slot holds which stream isn't
+    # guaranteed, so this deliberately lists audio first.
+    monkeypatch.setattr(downloader_module, "MEDIA_ROOT", str(tmp_path))
+    dl = await make_download(session, url="https://www.youtube.com/watch?v=abc123")
+    video_path = tmp_path / "MrDeriv" / "Some Video.mp4"
+    _write(video_path)
+
+    info = {
+        "title": "Some Video",
+        "extractor": "youtube",
+        "uploader": "MrDeriv",
+        "requested_downloads": [
+            {"filepath": str(video_path), "acodec": "mp4a.40.2", "vcodec": "none", "abr": 128.0},
+            {"filepath": str(video_path), "vcodec": "avc1.640028", "acodec": "none", "width": 1920, "height": 1080},
+        ],
+        "webpage_url": "https://www.youtube.com/watch?v=abc123",
+        "duration": 120,
+    }
+    downloader = Downloader()
+    await downloader._on_success(dl.id, info, "reivi")
+
+    from db import MediaItem
+    from sqlalchemy import select
+
+    item = (await session.execute(select(MediaItem).where(MediaItem.download_id == dl.id))).scalar_one()
+    assert item.width == 1920
+    assert item.height == 1080
+    assert item.vcodec == "avc1.640028"
+    assert item.acodec == "mp4a.40.2"
+    assert item.abr == 128.0
+
+
+async def test_media_item_profile_falls_back_to_entry_level_fields(session, make_download, tmp_path, monkeypatch):
+    # An already-muxed single format: no separate video-only/audio-only
+    # entries in requested_downloads, so _extract_media_profile falls back
+    # to the top-level entry fields instead of leaving everything None.
+    monkeypatch.setattr(downloader_module, "MEDIA_ROOT", str(tmp_path))
+    dl = await make_download(session, url="https://example.com/v1")
+    video_path = tmp_path / "Unsorted" / "Some Video.mp4"
+    _write(video_path)
+
+    info = {
+        "title": "Some Video",
+        "extractor": "generic",
+        "requested_downloads": [{"filepath": str(video_path)}],
+        "webpage_url": "https://example.com/v1",
+        "duration": 60,
+        "width": 1280,
+        "height": 720,
+        "vcodec": "h264",
+        "acodec": "aac",
+        "abr": 96.0,
+    }
+    downloader = Downloader()
+    await downloader._on_success(dl.id, info, "reivi")
+
+    from db import MediaItem
+    from sqlalchemy import select
+
+    item = (await session.execute(select(MediaItem).where(MediaItem.download_id == dl.id))).scalar_one()
+    assert item.width == 1280
+    assert item.height == 720
+    assert item.vcodec == "h264"
+    assert item.acodec == "aac"
+    assert item.abr == 96.0

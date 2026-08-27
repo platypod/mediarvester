@@ -12,6 +12,11 @@ export interface MediaItem {
   duration_seconds: number | null
   owner: string
   download_id: number
+  width: number | null
+  height: number | null
+  vcodec: string | null
+  acodec: string | null
+  abr: number | null
 }
 
 export const useMediaStore = defineStore('media', () => {
