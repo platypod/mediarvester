@@ -21,6 +21,11 @@ export interface Download {
   completed_items: string[] | null
   retry_count: number
   retry_at: string | null
+  width: number | null
+  height: number | null
+  vcodec: string | null
+  acodec: string | null
+  abr: number | null
 }
 
 export const useDownloadsStore = defineStore('downloads', () => {

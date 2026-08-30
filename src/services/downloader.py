@@ -383,6 +383,29 @@ def _extract_media_profile(entry: dict, requested: list[dict]) -> dict:
     }
 
 
+def _profile_from_info(info: dict) -> dict:
+    """Pull whatever video/audio profile fields a single progress-hook call's
+    info dict actually carries. Unlike _extract_media_profile (which sees
+    the full requested_downloads list only once a download finishes), the
+    hook fires once PER format -- a bestvideo+bestaudio download gets two
+    calls, one with vcodec set and acodec "none", one the other way round.
+    Only returns keys that resolved on THIS call; the caller merges rather
+    than overwrites, so an earlier call's video fields survive a later
+    call's audio-only info and vice versa."""
+    profile: dict = {}
+    if info.get("width"):
+        profile["width"] = info["width"]
+    if info.get("height"):
+        profile["height"] = info["height"]
+    if info.get("vcodec") not in (None, "none"):
+        profile["vcodec"] = info["vcodec"]
+    if info.get("acodec") not in (None, "none"):
+        profile["acodec"] = info["acodec"]
+    if info.get("abr"):
+        profile["abr"] = info["abr"]
+    return profile
+
+
 def _verify_downloaded_file(path: str, expected_duration: float | None) -> str | None:
     """Confirm a file yt-dlp reported as finished is actually a complete,
     readable media file -- not a truncated write (disk full mid-merge, a
@@ -722,17 +745,22 @@ class Downloader:
                 if entry:
                     entry["title"] = title
 
+        profile = _profile_from_info(info)
+
         if d["status"] == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes", 0)
             progress = (downloaded / total * 100) if total else 0.0
             self._schedule(
-                self._update_progress(download_id, progress, playlist_index, playlist_count, title)
+                self._update_progress(
+                    download_id, progress, playlist_index, playlist_count, title, profile=profile
+                )
             )
         elif d["status"] == "finished":
             self._schedule(
                 self._update_progress(
-                    download_id, 100.0, playlist_index, playlist_count, title, entry_finished=True
+                    download_id, 100.0, playlist_index, playlist_count, title,
+                    entry_finished=True, profile=profile,
                 )
             )
 
@@ -748,6 +776,7 @@ class Downloader:
         playlist_count: int | None,
         title: str | None,
         entry_finished: bool = False,
+        profile: dict | None = None,
     ) -> None:
         async with async_session() as session:
             dl = await session.get(Download, download_id)
@@ -763,6 +792,8 @@ class Downloader:
                 dl.current_index = playlist_index
             if title:
                 dl.current_title = title
+            for key, value in (profile or {}).items():
+                setattr(dl, key, value)
             if entry_finished and title:
                 completed = list(dl.completed_items or [])
                 if title not in completed:

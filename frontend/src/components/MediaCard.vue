@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { MediaItem } from '../stores/media'
+import { formatAudio, formatResolution } from '../utils/mediaProfile'
 
 defineProps<{ item: MediaItem; showOwner?: boolean }>()
 defineEmits<{ delete: [] }>()
@@ -11,19 +12,6 @@ function formatDuration(s: number | null): string {
   const sec = s % 60
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
   return `${m}:${String(sec).padStart(2, '0')}`
-}
-
-function formatResolution(item: MediaItem): string {
-  if (item.height) return `${item.height}p`
-  if (item.width && item.height) return `${item.width}x${item.height}`
-  return ''
-}
-
-function formatAudio(item: MediaItem): string {
-  if (!item.acodec) return ''
-  const codec = item.acodec.split('.')[0] // e.g. "mp4a.40.2" -> "mp4a"
-  if (item.abr) return `${codec} ${Math.round(item.abr)}k`
-  return codec
 }
 </script>
 

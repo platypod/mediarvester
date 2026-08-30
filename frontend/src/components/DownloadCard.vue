@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { Download } from '../stores/downloads'
+import { formatAudio, formatResolution } from '../utils/mediaProfile'
 
 defineProps<{ download: Download; showOwner?: boolean }>()
 defineEmits<{ delete: [] }>()
@@ -49,6 +50,18 @@ function formatTime(iso: string): string {
             title="Auto-retried after a previous failure"
           >
             retry {{ download.retry_count }}
+          </span>
+          <span
+            v-if="formatResolution(download)"
+            class="text-xs bg-gray-700 text-gray-400 px-2 py-0.5 rounded"
+          >
+            {{ formatResolution(download) }}
+          </span>
+          <span
+            v-if="formatAudio(download)"
+            class="text-xs bg-gray-700 text-gray-400 px-2 py-0.5 rounded"
+          >
+            {{ formatAudio(download) }}
           </span>
         </div>
         <p class="text-gray-100 text-sm truncate font-medium">

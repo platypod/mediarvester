@@ -65,6 +65,16 @@ class Download(Base):
     # Persisted (not just passed at enqueue time) so a restart's
     # recover_interrupted can honour it on re-enqueue too.
     folder_hint: Mapped[str | None]
+    # Video/audio profile, populated as soon as yt-dlp's progress hook sees
+    # each selected format (before the file finishes) -- not just on success,
+    # unlike MediaItem's copy of these same fields, so the Queue view can
+    # show quality info on a still-downloading row. See services/downloader.py's
+    # _profile_from_info.
+    width: Mapped[int | None]
+    height: Mapped[int | None]
+    vcodec: Mapped[str | None]
+    acodec: Mapped[str | None]
+    abr: Mapped[float | None]
 
 
 class Source(Base):
@@ -190,3 +200,14 @@ async def create_all() -> None:
             await conn.execute(text("ALTER TABLE media_item ADD COLUMN vcodec TEXT"))
             await conn.execute(text("ALTER TABLE media_item ADD COLUMN acodec TEXT"))
             await conn.execute(text("ALTER TABLE media_item ADD COLUMN abr FLOAT"))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT width FROM download LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE download ADD COLUMN width INTEGER"))
+            await conn.execute(text("ALTER TABLE download ADD COLUMN height INTEGER"))
+            await conn.execute(text("ALTER TABLE download ADD COLUMN vcodec TEXT"))
+            await conn.execute(text("ALTER TABLE download ADD COLUMN acodec TEXT"))
+            await conn.execute(text("ALTER TABLE download ADD COLUMN abr FLOAT"))
