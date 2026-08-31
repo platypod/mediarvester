@@ -7,6 +7,19 @@ export default defineConfig({
     vue(),
     VitePWA({
       registerType: 'autoUpdate',
+      workbox: {
+        // /share is how the iOS Shortcut / Android share-target enqueue a
+        // video: it must always hit the network so an expired Authelia
+        // session gets a real redirect to the login page instead of being
+        // served the precached app shell offline.
+        navigateFallbackDenylist: [/^\/share/],
+        runtimeCaching: [
+          {
+            urlPattern: /^\/api\//,
+            handler: 'NetworkOnly',
+          },
+        ],
+      },
       manifest: {
         name: 'mediarvester',
         short_name: 'mediarvester',

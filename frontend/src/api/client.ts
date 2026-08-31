@@ -5,6 +5,14 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
+  if (res.redirected) {
+    // Session expired mid-request: Authelia forward-auth intercepted and
+    // fetch() silently followed the redirect to its login page. Hand off to
+    // a real navigation so the browser shows the login UI and Authelia's
+    // `rd` param can bring the user back here after they log in.
+    window.location.href = res.url
+    return new Promise<T>(() => {})
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`${method} ${url} → ${res.status}${text ? ': ' + text : ''}`)
