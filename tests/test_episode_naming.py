@@ -101,3 +101,66 @@ def test_marker_trims_everything_from_the_match_onward():
     # not just the marker word itself.
     info = {"title": "Le Retour du Cerf - Elden Ring - Épisode 27"}
     assert resolve_episode(info) == (27, "Le Retour du Cerf - Elden Ring")
+
+
+def test_mid_title_hash_number_followed_by_a_dash_is_an_episode_marker():
+    # "<show> #N - <episode title>": the marker closes its segment, so the
+    # number is trustworthy even though it isn't at the end. Confirmed
+    # missed in production (2026-09-17) -- a followed series downloaded 22
+    # episodes, none of them renamed.
+    info = {
+        "title": "VOD ► LE TUNNEL #16 -  ORQUES & GOBELINS DU VIEUX MONDE "
+        "- LORE WARHAMMER FANTASY"
+    }
+    assert resolve_episode(info) == (
+        16,
+        "ORQUES & GOBELINS DU VIEUX MONDE - LORE WARHAMMER FANTASY",
+    )
+
+
+def test_mid_title_marker_keeps_the_tail_not_the_leading_show_name():
+    # The opposite trim direction from a terminal marker, and the whole
+    # reason this is a separate pattern: trimming this one the terminal way
+    # yields the show name ("VOD ► LE TUNNEL") for every episode, leaving
+    # files that differ only by their number prefix.
+    info = {"title": "VOD ► LE TUNNEL #22 - LES SALAMANDERS - LORE WARHAMMER 40K"}
+    assert resolve_episode(info) == (22, "LES SALAMANDERS - LORE WARHAMMER 40K")
+
+
+def test_mid_title_hash_number_not_followed_by_a_dash_is_still_ignored():
+    # Unchanged from before: "#1" here modifies the word after it (a rank),
+    # it doesn't close a segment. The " - " delimiter is the only thing that
+    # distinguishes this from a real marker.
+    assert resolve_episode({"title": "My #1 Favorite Game - Highlights"}) is None
+
+
+def test_mid_title_marker_tolerates_irregular_spacing_around_the_dash():
+    # This creator's own titles are inconsistent here (a double space after
+    # the dash on some episodes, a single on others).
+    single = {"title": "Show #7 - A Title"}
+    double = {"title": "Show #7 -  A Title"}
+    assert resolve_episode(single) == resolve_episode(double) == (7, "A Title")
+
+
+def test_marker_word_wins_over_a_mid_title_hash_number():
+    # An explicit "Épisode N" is what the creator actually labeled the
+    # episode as, so it outranks a "#N - " earlier in the title.
+    info = {"title": "Best of #3 - Le Retour du Cerf - Épisode 27"}
+    assert resolve_episode(info) == (27, "Best of #3 - Le Retour du Cerf")
+
+
+def test_trailing_hash_number_still_wins_over_the_segment_pattern():
+    # Both shapes are present; the terminal one is checked first and trims
+    # the other way, keeping everything before it.
+    info = {"title": "Series #4 - Something Happened #12"}
+    assert resolve_episode(info) == (12, "Series #4 - Something Happened")
+
+
+def test_mid_title_marker_with_no_tail_after_the_dash_is_ignored():
+    # Nothing usable follows the delimiter, so there is no display title to
+    # fall back to -- structured metadata (or nothing) handles it instead.
+    assert resolve_episode({"title": "Show #9 -"}) is None
+
+
+def test_mid_title_marker_with_no_leading_show_name():
+    assert resolve_episode({"title": "#5 - Something"}) == (5, "Something")
