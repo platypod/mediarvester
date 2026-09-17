@@ -3,7 +3,7 @@ uvicorn[standard]>=0.29.0
 sqlalchemy[asyncio]>=2.0.0
 aiosqlite>=0.20.0
 asyncpg>=0.29.0
-apscheduler>=3.10.0
+apscheduler>=3.11.3
 yt-dlp>=2026.7.4
 yt-dlp-ejs
 # PO Token provider plugin -- retrieves tokens from the bgutil-ytdlp-pot-provider
