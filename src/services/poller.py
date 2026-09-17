@@ -188,7 +188,8 @@ def _new_entries_since(
     errors: list[str] = []
     for tab_url in tab_urls:
         try:
-            entries, error = _new_entries_in_playlist(tab_url, cutoff_ts, cookies)
+            reverse = _first_entry_predates(tab_url, cutoff_ts, cookies)
+            entries, error = _new_entries_in_playlist(tab_url, cutoff_ts, cookies, reverse=reverse)
             collected.extend(entries)
             if error:
                 errors.append(f"{tab_url}: {error}")
@@ -214,6 +215,84 @@ def _relevant_tab_urls(url: str, include_shorts: bool, cookies: str | None) -> l
         if any(path.endswith(suffix) for suffix in wanted_suffixes):
             tab_urls.append(tab_url)
     return tab_urls or [url]
+
+
+def _first_entry_predates(url: str, cutoff_ts: float, cookies: str | None) -> bool:
+    """Should this playlist be walked back to front?
+
+    The scan's `break_on_reject` optimisation assumes the traversal reaches
+    the newest content first: it aborts the moment it sees something older
+    than the follow date. A channel tab is served newest-first, so that held
+    for every source this was originally built against. A series playlist is
+    the opposite -- episode 1 first -- so the walk hit a video predating the
+    follow on its VERY FIRST entry and aborted before reaching any of the new
+    ones at the far end. Silently: `RejectedVideoReached` is the scan's
+    designed clean stop, so `last_poll_error` stayed None and the poll
+    recorded result="ok". Confirmed 2026-09-17: two followed playlist sources,
+    zero downloads between them since being added, against 376 and 363 for the
+    two channel sources on the same schedule.
+
+    Rather than assume an ordering per URL shape (the assumption that failed
+    in the first place), ask the playlist: full-extract position 1 only and
+    look at its date. One entry, so it costs a single metadata fetch.
+
+    A first entry that predates the cutoff means walking forward would abort
+    immediately, so walk backwards instead. That is the right call for every
+    shape:
+
+    - oldest-first with new content at the end -> reversed, the walk starts
+      at the newest and `break_on_reject` works as designed (the bug this
+      fixes);
+    - oldest-first but entirely newer than the cutoff -> first entry is not
+      older, so forward, and nothing is ever rejected;
+    - newest-first with new content -> first entry is not older, so forward,
+      exactly as before;
+    - newest-first and entirely older -> reversed, and the oldest entry
+      rejects immediately. Still nothing new, still cheap, just approached
+      from the other end.
+
+    KNOWN LIMIT: a playlist not ordered by date at all (hand-curated, or
+    re-ordered after the fact) has no direction that makes an early abort
+    safe -- the walk will still stop at whatever out-of-window entry it meets
+    first. This makes the common shapes correct; it does not make
+    `break_on_reject` safe for an arbitrary ordering.
+
+    Returns False when the date can't be read (a deleted or private first
+    entry, an extractor that exposes nothing), which keeps the previous
+    forward-walking behaviour rather than guessing.
+    """
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        # Position 1 only -- this is a probe, not the scan.
+        "playlist_items": "1",
+        # A private/deleted first entry must not raise the whole poll; an
+        # unreadable date falls through to False below.
+        "ignoreerrors": True,
+        **_YOUTUBE_OPTS,
+    }
+    if cookies:
+        opts["cookiefile"] = cookies
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+    except Exception as exc:
+        logger.debug("could not probe entry order for %s: %s", url, exc)
+        return False
+
+    entries = info.get("entries") or []
+    first = entries[0] if entries else {}
+    if not first:
+        return False
+    published = first.get("timestamp")
+    if published is None:
+        published = _parse_upload_date(first.get("upload_date"))
+    if published is None:
+        return False
+    if published < cutoff_ts:
+        logger.info("walking %s back to front -- its first entry predates the follow", url)
+        return True
+    return False
 
 
 def _remember(collected: dict[str, dict], info: dict) -> None:
@@ -345,11 +424,19 @@ class _ScanLogger:
         return head if extra <= 0 else f"{head} (+{extra} more)"
 
 
-def _new_entries_in_playlist(url: str, cutoff_ts: float, cookies: str | None) -> tuple[list[dict], str | None]:
+def _new_entries_in_playlist(
+    url: str, cutoff_ts: float, cookies: str | None, reverse: bool = False
+) -> tuple[list[dict], str | None]:
     """Fetch full per-video metadata one entry at a time (newest first),
     stopping as soon as an entry older than `cutoff_ts` is hit. This is only
     cheap because `break_on_reject` aborts extraction the moment it reaches
     content that predates the follow -- it never walks the whole catalog.
+
+    "Newest first" is a property of the TRAVERSAL, not of the URL: a channel
+    tab is served newest-first, but a series playlist is typically
+    oldest-first. `reverse` walks the entries back to front so the newest is
+    reached first either way, which is what makes `break_on_reject` safe to
+    keep. See `_first_entry_predates` for how the direction is chosen.
 
     Returns `(entries, error)` -- see `_new_entries_since` for why the error
     signal matters as much as the entries themselves.
@@ -391,6 +478,13 @@ def _new_entries_in_playlist(url: str, cutoff_ts: float, cookies: str | None) ->
         "logger": scan_log,
         **_YOUTUBE_OPTS,
     }
+    if reverse:
+        # yt-dlp's own slice syntax for "every entry, back to front". Applied
+        # as playlist_items rather than the deprecated `playlistreverse`, and
+        # verified against a real oldest-first playlist to still honour
+        # lazy_playlist + break_on_reject (it stops early, it does not
+        # materialise the whole list first).
+        opts["playlist_items"] = "::-1"
     if cookies:
         opts["cookiefile"] = cookies
     try:

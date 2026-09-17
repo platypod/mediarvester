@@ -450,3 +450,157 @@ async def test_concurrent_polls_never_scan_youtube_at_the_same_time(
     )
 
     assert max_concurrent_scans == 1
+
+
+# --- traversal direction -------------------------------------------------
+#
+# `break_on_reject` aborts the walk at the first entry older than the follow
+# date, which is only correct if the traversal reaches the newest content
+# first. Channel tabs are newest-first; series playlists are oldest-first and
+# aborted on their very first entry, silently returning "nothing new" forever
+# (confirmed in production 2026-09-17). These pin the direction choice.
+
+
+def _FakeYoutubeDL(extract):
+    """Minimal yt_dlp.YoutubeDL stand-in: a context manager whose
+    extract_info defers to `extract(url, cookies)`."""
+
+    class _Fake:
+        def __init__(self, opts):
+            self._opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return extract(url, self._opts.get("cookiefile"))
+
+    return _Fake
+
+
+def _probe_returning(published_ts):
+    """Stand in for the single-entry metadata probe."""
+
+    def fake(url, cookies):
+        return {"entries": [{"timestamp": published_ts}] if published_ts is not None else []}
+
+    return fake
+
+
+def test_oldest_first_playlist_is_walked_in_reverse(monkeypatch):
+    # First entry predates the follow -- walking forward would abort on it.
+    monkeypatch.setattr(poller_module.yt_dlp, "YoutubeDL", _FakeYoutubeDL(_probe_returning(1_000.0)))
+    assert poller_module._first_entry_predates("https://x/playlist?list=PL1", 5_000.0, None) is True
+
+
+def test_newest_first_tab_is_walked_forward(monkeypatch):
+    # First entry is the newest -- the existing forward walk stays correct.
+    monkeypatch.setattr(poller_module.yt_dlp, "YoutubeDL", _FakeYoutubeDL(_probe_returning(9_000.0)))
+    assert poller_module._first_entry_predates("https://x/@c/videos", 5_000.0, None) is False
+
+
+def test_probe_falls_back_to_upload_date_when_timestamp_is_absent(monkeypatch):
+    monkeypatch.setattr(
+        poller_module.yt_dlp,
+        "YoutubeDL",
+        _FakeYoutubeDL(lambda url, cookies: {"entries": [{"upload_date": "20260612"}]}),
+    )
+    # 20260612 is well before a 2026-08-18 cutoff.
+    cutoff = poller_module._parse_upload_date("20260818")
+    assert poller_module._first_entry_predates("https://x/playlist?list=PL1", cutoff, None) is True
+
+
+def test_probe_without_a_readable_date_keeps_walking_forward(monkeypatch):
+    # A deleted/private first entry must not flip the direction on a guess.
+    monkeypatch.setattr(
+        poller_module.yt_dlp,
+        "YoutubeDL",
+        _FakeYoutubeDL(lambda url, cookies: {"entries": [{}]}),
+    )
+    assert poller_module._first_entry_predates("https://x/playlist?list=PL1", 5_000.0, None) is False
+
+
+def test_probe_with_no_entries_keeps_walking_forward(monkeypatch):
+    monkeypatch.setattr(poller_module.yt_dlp, "YoutubeDL", _FakeYoutubeDL(_probe_returning(None)))
+    assert poller_module._first_entry_predates("https://x/playlist?list=PL1", 5_000.0, None) is False
+
+
+def test_probe_failure_does_not_propagate(monkeypatch):
+    # The probe is an optimisation hint; a failure must not fail the poll.
+    def boom(url, cookies):
+        raise RuntimeError("network went away")
+
+    monkeypatch.setattr(poller_module.yt_dlp, "YoutubeDL", _FakeYoutubeDL(boom))
+    assert poller_module._first_entry_predates("https://x/playlist?list=PL1", 5_000.0, None) is False
+
+
+def test_probe_asks_for_a_single_entry_only(monkeypatch):
+    # The probe must stay one metadata fetch -- if it ever walked the whole
+    # playlist it would cost as much as the scan it exists to make cheap.
+    seen = {}
+
+    class _Recording:
+        def __init__(self, opts):
+            seen.update(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"entries": [{"timestamp": 1_000.0}]}
+
+    monkeypatch.setattr(poller_module.yt_dlp, "YoutubeDL", _Recording)
+    poller_module._first_entry_predates("https://x/playlist?list=PL1", 5_000.0, None)
+    assert seen["playlist_items"] == "1"
+
+
+def test_reverse_sets_yt_dlps_back_to_front_slice(monkeypatch):
+    # The reversed walk must reach yt-dlp as a playlist_items slice; without
+    # it the traversal direction silently stays forward.
+    seen = {}
+
+    class _Recording:
+        def __init__(self, opts):
+            seen.update(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {}
+
+    monkeypatch.setattr(poller_module.yt_dlp, "YoutubeDL", _Recording)
+    poller_module._new_entries_in_playlist("https://x/playlist?list=PL1", 5_000.0, None, reverse=True)
+    assert seen["playlist_items"] == "::-1"
+    # ...and the early abort it exists to keep working is still enabled.
+    assert seen["break_on_reject"] is True
+
+
+def test_forward_walk_sets_no_playlist_items(monkeypatch):
+    seen = {}
+
+    class _Recording:
+        def __init__(self, opts):
+            seen.update(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {}
+
+    monkeypatch.setattr(poller_module.yt_dlp, "YoutubeDL", _Recording)
+    poller_module._new_entries_in_playlist("https://x/@c/videos", 5_000.0, None)
+    assert "playlist_items" not in seen
