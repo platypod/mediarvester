@@ -11,7 +11,16 @@ yt-dlp-ejs
 # YouTube's proof-of-origin requirement for actual video-data downloads. Without
 # it, format URLs resolve and start streaming fine but get cut off mid-transfer
 # with a 403 -- confirmed empirically 2026-08-18.
-bgutil-ytdlp-pot-provider>=1.3.1
+# Capped below 2: this plugin REFUSES to serve a token when its major version
+# differs from the sidecar server's ("Plugin and HTTP server major versions are
+# mismatched", yt-dlp's own words), and the server is pinned to 1.3.2 by
+# stack's apps/base/values/media.yaml. Unbounded, a rebuild silently picked up
+# 2.0.0 against that 1.3.2 server: no PO Token, so every mweb adaptive format
+# was skipped and downloads fell back to the 360p progressive stream. Not an
+# error anywhere -- the download "succeeded", just at 640x360. Confirmed
+# 2026-09-18 on 8 real downloads; re-pinning restored formats up to 1440p
+# against the same sidecar. Raise both sides together or not at all.
+bgutil-ytdlp-pot-provider>=1.3.1,<2
 sse-starlette>=2.1.0
 python-multipart>=0.0.9
 # Observability: standard OpenTelemetry SDK for metrics + traces, exported via
