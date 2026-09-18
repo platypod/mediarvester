@@ -273,3 +273,17 @@ def test_a_brand_new_show_starts_at_season_one(tmp_path):
 def test_episode_nfo_reports_the_season_it_was_filed_under():
     xml = L.episode_nfo(entry(), 4, season=3)
     assert "<season>3</season>" in xml and "<episode>4</episode>" in xml
+
+
+def test_nfo_is_written_when_the_episode_title_starts_with_s(tmp_path):
+    # Parsing the stem by splitting on " - S" grabs the TITLE's leading S
+    # instead of the episode marker, the parse raises, and the episode is
+    # silently left with no metadata. 17 real files were affected.
+    src_dir = tmp_path / "in"
+    src_dir.mkdir()
+    video = src_dir / "Satanés Égouts - Elden Ring #39.mkv"
+    video.write_text("v")
+    e = entry(title="Satanés Égouts - Elden Ring #39", playlist_title="Elden Ring",
+              uploader="MrDeriv", id="abc")
+    new = L.place(str(video), e, str(tmp_path))
+    assert os.path.exists(os.path.splitext(new)[0] + ".nfo"), os.listdir(os.path.dirname(new))

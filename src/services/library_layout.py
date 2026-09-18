@@ -51,6 +51,9 @@ SEASON = DEFAULT_SEASON  # back-compat alias for the default
 
 _SEASON_DIR_RE = re.compile(r"^Season (\d+)", re.IGNORECASE)
 
+# The SxxExx marker inside a built filename stem.
+_STEM_MARKER_RE = re.compile(r" - S(\d{2})E(\d{2}) - ")
+
 # A playlist whose name means "everything this channel posted" is not a serial.
 # Treating one as a show produces a "series" of hundreds of unrelated uploads
 # with no meaningful episode order -- Feldup's uploads tab (138 videos) is the
@@ -369,9 +372,14 @@ def _move_sidecars(src: Path, directory: Path, stem: str, kind: str) -> None:
 def _write_metadata(directory: Path, stem: str, entry: dict, kind: str) -> None:
     try:
         if kind == "series":
-            marker = stem.rsplit(" - S", 1)[1]
-            season = int(marker.split("E")[0])
-            number = int(marker.split("E")[1].split(" - ")[0])
+            # Matched as a pattern, never by splitting on " - S": an episode
+            # whose TITLE starts with S ("... - S01E39 - Satanés Égouts")
+            # makes a rsplit grab the title's own S and the parse dies, so the
+            # episode silently gets no metadata at all. 17 real files hit this.
+            marker = _STEM_MARKER_RE.search(stem)
+            if not marker:
+                raise ValueError(f"no SxxExx marker in {stem!r}")
+            season, number = int(marker.group(1)), int(marker.group(2))
             (directory / f"{stem}.nfo").write_text(
                 episode_nfo(entry, number, season), encoding="utf-8")
             # One per show, beside the Season folder, not inside it.
