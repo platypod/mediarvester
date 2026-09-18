@@ -137,6 +137,7 @@ src/                          # Python backend
     settings.py               # GET /api/settings/me, GET+POST /api/settings/cookies
   services/
     downloader.py             # yt-dlp wrapper; ThreadPoolExecutor; progress hooks → DB
+    library_layout.py         # series/ vs singles/ placement + Jellyfin .nfo metadata
     poller.py                 # APScheduler jobs; one per enabled Source
 
 tests/                        # pytest -- pure logic + API contract, no real network.
@@ -233,10 +234,35 @@ def get_current_user(request: Request) -> str:
 - Run each download in a `ThreadPoolExecutor` (max workers = `DOWNLOAD_CONCURRENCY`, default 2).
 - `enqueue(download_id, url, owner)` — owner is used to resolve the cookies file.
 - Cookies resolution order: `{COOKIES_ROOT}/{owner}.txt` → `YT_DLP_COOKIES_PATH` → no cookies.
-- Output template: `{MEDIA_ROOT}/{uploader}/{playlist}/{title}.ext` — platform-agnostic.
-  `uploader` falls back through `channel` → `creator` → `Unsorted`. `playlist` is omitted
-  (empty component, normalised away by pathlib) when the content is not part of a playlist.
+- yt-dlp writes to `{MEDIA_ROOT}/{uploader}/{playlist}/{title}.ext`; on success the file is
+  then **placed** into the Jellyfin-facing layout by `services/library_layout.py` (below).
 - On finish, read yt-dlp's `.info.json` sidecar and upsert a `MediaItem` row (with `owner`).
+
+### Library layout (`services/library_layout.py`)
+
+Two roots under `MEDIA_ROOT`, read by two Jellyfin libraries with different collection types:
+
+```
+series/<Creator> - <Playlist>/Season 01/<Show> - S01E04 - <Title>.ext   # tvshows
+singles/<Creator>/<Title>.ext                                          # movies
+```
+
+- **Why split**: a tvshows library treats every top-level folder as a series, so a loose
+  creator video dropped into one becomes a bogus single-episode show.
+- **series** requires a real playlist *and* an episode number. A playlist named `NA`, or one
+  that is the channel's uploads tab (`Videos`, `Vidéos`, `<Creator> - Videos`), is not a show.
+- Shows whose creator numbers nothing are ordered by upload date; once such a show exists,
+  later unnumbered episodes join it via `next_episode_number` instead of falling to singles.
+- `<Creator>` is in the show folder name because playlist names collide across channels.
+- **Season is always 01** — YouTube has no seasons. See the module docstring.
+- **Metadata is Kodi-style `.nfo` sidecars**, not a Jellyfin plugin: Jellyfin reads them
+  natively, so there is no API coupling and nothing to break on a Jellyfin upgrade.
+  `tvshow.nfo` per show, `<episode>.nfo` / `<movie>.nfo` per file.
+- Artwork is renamed to the suffix Jellyfin looks for: `-thumb` (episodes), `-poster` (movies).
+
+> **Jellyfin config this code cannot enforce**: both libraries must have their *online*
+> metadata providers switched off, or Jellyfin will match "LE TUNNEL" against TheTVDB and
+> overwrite these files' metadata with an unrelated programme's.
 
 ### Cookies upload (`api/settings.py`)
 
@@ -266,6 +292,8 @@ In production, FastAPI serves the built `frontend/dist/` as static files under `
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/mediarvester.db` | SQLAlchemy async connection string |
 | `MEDIA_ROOT` | `/app/downloads` | Where media files are written |
+| `SERIES_SUBDIR` | `series` | Subfolder of `MEDIA_ROOT` for the Jellyfin **tvshows** library |
+| `SINGLES_SUBDIR` | `singles` | Subfolder of `MEDIA_ROOT` for the Jellyfin **movies** library |
 | `COOKIES_ROOT` | `/app/cookies` | Per-user cookies files (`{user}.txt`) — mount as volume |
 | `AUTH_HEADER` | `Remote-User` | HTTP header forwarded by Authelia with the user identity |
 | `DEFAULT_USER` | `anonymous` | User identity when the auth header is absent |

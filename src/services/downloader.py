@@ -18,6 +18,7 @@ from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import delete, select, update
 
 from db import Download, MediaItem, async_session
+from services import library_layout
 from services.episode_naming import resolve_episode
 from services.telemetry import meter, propagate_context, tracer
 
@@ -955,16 +956,24 @@ class Downloader:
         # Normalise away double slashes that arise when optional template
         # components (e.g. playlist) are absent and evaluate to "".
         abs_path = str(Path(abs_path))
-        abs_path = _apply_episode_prefix(abs_path, entry)
+        # Places the file under series/ or singles/, renames its sidecars and
+        # writes the .nfo Jellyfin reads. Supersedes _apply_episode_prefix,
+        # which only ever renamed in place; see services/library_layout.py.
+        abs_path = library_layout.place(abs_path, entry, MEDIA_ROOT)
         _cleanup_stray_fragments(requested[0].get("filepath", ""))
         local_path = os.path.relpath(abs_path, MEDIA_ROOT)
 
+        # The thumbnail now carries Jellyfin's own suffix, so it is no longer
+        # just the media file's stem with the extension swapped.
         thumbnail_path: str | None = None
         base = Path(MEDIA_ROOT) / local_path
+        suffix = library_layout.IMAGE_SUFFIX[library_layout.classify(entry, MEDIA_ROOT)]
         for ext in (".jpg", ".png", ".webp"):
-            candidate = base.with_suffix(ext)
-            if candidate.exists():
-                thumbnail_path = os.path.relpath(str(candidate), MEDIA_ROOT)
+            for candidate in (base.with_name(base.stem + suffix + ext), base.with_suffix(ext)):
+                if candidate.exists():
+                    thumbnail_path = os.path.relpath(str(candidate), MEDIA_ROOT)
+                    break
+            if thumbnail_path:
                 break
 
         profile = _extract_media_profile(entry, requested)

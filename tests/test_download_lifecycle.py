@@ -202,7 +202,13 @@ async def test_thumbnail_is_detected_when_present_alongside_the_video(
     from sqlalchemy import select
 
     item = (await session.execute(select(MediaItem).where(MediaItem.download_id == dl.id))).scalar_one()
-    assert item.thumbnail_path == "MrDeriv/Some Video.webp"
+    # Since v1.10 the file is placed into the Jellyfin-facing layout on
+    # success (services/library_layout.py): an unnumbered video with no
+    # playlist is a "single", and its artwork carries the -poster suffix
+    # Jellyfin looks artwork up by. The point of this test is unchanged --
+    # the thumbnail beside the video must be found and recorded.
+    assert item.thumbnail_path == "singles/Unsorted/Some Video-poster.webp"
+    assert item.local_path == "singles/Unsorted/Some Video.mp4"
 
 
 async def test_success_clears_stale_error_rows_for_the_same_url_and_owner(
