@@ -454,3 +454,35 @@ def test_a_missing_ffmpeg_never_breaks_the_download(monkeypatch, tmp_path):
     monkeypatch.setattr(L.subprocess, "run", boom)
     new, _ = _place_episode(tmp_path, title="Ep #16", with_image=False)
     assert os.path.exists(new)
+
+
+def test_the_source_folder_is_pruned_once_it_is_empty(tmp_path):
+    # yt-dlp writes to {MEDIA_ROOT}/{uploader}/ and place() moves the file out,
+    # so without this every download leaves a hollow folder behind and
+    # MEDIA_ROOT refills with exactly the clutter the split removes.
+    src = tmp_path / "Creator" / "Some Playlist"
+    src.mkdir(parents=True)
+    v = src / "Ep #2.webm"
+    v.write_text("v")
+    L.place(str(v), entry(title="Ep #2", playlist_title="A Show", uploader="C"), str(tmp_path))
+    assert not src.exists()
+    assert not (tmp_path / "Creator").exists()
+
+
+def test_pruning_stops_at_a_folder_that_still_holds_something(tmp_path):
+    src = tmp_path / "Creator"
+    src.mkdir()
+    (src / "Another Video.webm").write_text("keep me")
+    v = src / "Ep #2.webm"
+    v.write_text("v")
+    L.place(str(v), entry(title="Ep #2", playlist_title="A Show", uploader="C"), str(tmp_path))
+    assert (src / "Another Video.webm").exists()
+
+
+def test_pruning_never_removes_the_library_roots(tmp_path):
+    src = tmp_path / "singles" / "Creator"
+    src.mkdir(parents=True)
+    v = src / "Ep #2.webm"
+    v.write_text("v")
+    L.place(str(v), entry(title="Ep #2", playlist_title="A Show", uploader="C"), str(tmp_path))
+    assert (tmp_path / "singles").is_dir()

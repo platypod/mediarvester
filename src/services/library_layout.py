@@ -341,10 +341,35 @@ def place(abs_path: str, entry: dict, media_root: str) -> str:
         _move_sidecars(src, Path(directory), stem, kind)
         _ensure_artwork(Path(directory), stem, kind, entry, dest)
         _write_metadata(Path(directory), stem, entry, kind)
+        _prune_empty(src.parent, media_root)
         return str(dest)
     except OSError as exc:
         logger.warning("could not place %s into the library layout: %s", src.name, exc)
         return abs_path
+
+
+def _prune_empty(directory: Path, media_root: str) -> None:
+    """Remove the directory the download came from, once it is empty.
+
+    yt-dlp writes to `{MEDIA_ROOT}/{uploader}/{playlist}/` and `place` moves
+    the result into the library tree, so every download leaves its original
+    folder behind empty. Unpruned, MEDIA_ROOT slowly refills with hollow
+    creator folders -- the exact clutter the library split exists to remove.
+
+    Walks upward while each level is empty, and stops at MEDIA_ROOT itself and
+    at the library roots, which must survive even when they happen to be empty.
+    """
+    root = Path(media_root).resolve()
+    keep = {root, root / SERIES_SUBDIR, root / SINGLES_SUBDIR}
+    current = directory.resolve()
+    while current not in keep and root in current.parents:
+        try:
+            if any(current.iterdir()):
+                return
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent
 
 
 def _move_sidecars(src: Path, directory: Path, stem: str, kind: str) -> None:
