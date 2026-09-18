@@ -382,3 +382,75 @@ def test_a_single_gets_a_poster_suffix_not_a_thumb(tmp_path):
     (src / "Loose Video.webp").write_bytes(b"x" * 2000)
     new = L.place(str(v), entry(title="Loose Video", uploader="Naomi Jon"), str(tmp_path))
     assert os.path.exists(os.path.join(os.path.dirname(new), "Loose Video-poster.webp"))
+
+
+def test_a_frame_is_extracted_when_youtube_has_no_thumbnail(monkeypatch, tmp_path):
+    # Older/hand-curated items cannot be identified on YouTube, so there is no
+    # thumbnail to fetch. A frame from the file itself is better than a blank
+    # tile, and storing it beside the media survives a library rebuild.
+    def no_thumb(entry, dest):
+        return False
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        # ffmpeg writes its output file
+        open(cmd[-1], "wb").write(b"j" * 4000)
+        class R: returncode = 0
+        return R()
+
+    monkeypatch.setattr(L, "_fetch_thumbnail", no_thumb)
+    monkeypatch.setattr(L.subprocess, "run", fake_run)
+    new, _ = _place_episode(tmp_path, title="Ep #12", with_image=False)
+    season = os.path.dirname(new)
+    assert any(n.endswith("-thumb.jpg") for n in os.listdir(season)), os.listdir(season)
+    assert calls and calls[0][0] == "ffmpeg"
+
+
+def test_the_frame_is_taken_past_the_intro_not_at_the_start(monkeypatch, tmp_path):
+    # The opening seconds are routinely black, a fade, or a channel intro
+    # identical across every episode -- all useless as artwork.
+    seeks = []
+
+    def fake_run(cmd, **kw):
+        seeks.append(float(cmd[cmd.index("-ss") + 1]))
+        open(cmd[-1], "wb").write(b"j" * 4000)
+        class R: returncode = 0
+        return R()
+
+    monkeypatch.setattr(L, "_fetch_thumbnail", lambda e, d: False)
+    monkeypatch.setattr(L.subprocess, "run", fake_run)
+    _place_episode(tmp_path, title="Ep #13", with_image=False, duration=600)
+    assert seeks and seeks[0] == 60.0          # 10% of a 10-minute video
+
+
+def test_youtubes_thumbnail_wins_over_a_frame_grab(monkeypatch, tmp_path):
+    ran = []
+    monkeypatch.setattr(L, "_fetch_thumbnail", lambda e, d: (d.write_bytes(b"y" * 3000), True)[1])
+    monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: ran.append(a))
+    _place_episode(tmp_path, title="Ep #14", with_image=False)
+    assert not ran, "ffmpeg ran even though a YouTube thumbnail was available"
+
+
+def test_a_failed_extraction_leaves_no_corrupt_image(monkeypatch, tmp_path):
+    def fake_run(cmd, **kw):
+        open(cmd[-1], "wb").write(b"")           # ffmpeg produced nothing usable
+        class R: returncode = 1
+        return R()
+
+    monkeypatch.setattr(L, "_fetch_thumbnail", lambda e, d: False)
+    monkeypatch.setattr(L.subprocess, "run", fake_run)
+    new, _ = _place_episode(tmp_path, title="Ep #15", with_image=False)
+    season = os.path.dirname(new)
+    assert not any(n.endswith("-thumb.jpg") for n in os.listdir(season))
+
+
+def test_a_missing_ffmpeg_never_breaks_the_download(monkeypatch, tmp_path):
+    def boom(*a, **k):
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr(L, "_fetch_thumbnail", lambda e, d: False)
+    monkeypatch.setattr(L.subprocess, "run", boom)
+    new, _ = _place_episode(tmp_path, title="Ep #16", with_image=False)
+    assert os.path.exists(new)

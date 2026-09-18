@@ -29,6 +29,7 @@ import urllib.request
 import logging
 import os
 import re
+import subprocess
 from os import environ
 from pathlib import Path
 
@@ -338,9 +339,7 @@ def place(abs_path: str, entry: dict, media_root: str) -> str:
             src.rename(dest)
 
         _move_sidecars(src, Path(directory), stem, kind)
-        if not any((Path(directory) / f"{stem}{IMAGE_SUFFIX[kind]}{e}").exists()
-                   for e in _IMAGE_EXTS):
-            _fetch_thumbnail(entry, Path(directory) / f"{stem}{IMAGE_SUFFIX[kind]}.jpg")
+        _ensure_artwork(Path(directory), stem, kind, entry, dest)
         _write_metadata(Path(directory), stem, entry, kind)
         return str(dest)
     except OSError as exc:
@@ -400,6 +399,45 @@ def _fetch_thumbnail(entry: dict, dest: Path) -> bool:
     return False
 
 
+def _extract_frame(video: Path, dest: Path, duration: float | None) -> bool:
+    """Last resort: grab a frame from the video itself.
+
+    Used only when the item has no YouTube thumbnail to fetch -- older or
+    hand-curated content whose source video cannot be identified. A frame is
+    honest about what the item contains, and storing it here means Jellyfin
+    does not have to re-derive one into a cache that is lost on a library
+    rebuild.
+
+    The seek lands ~10% in rather than at the start: the opening seconds of a
+    video are routinely black, a fade, or a channel intro identical across
+    every episode of a series, all of which make useless artwork.
+    """
+    offset = max(1.0, (duration or 0) * 0.1) if duration else 30.0
+    try:
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-ss", f"{offset:.2f}", "-i", str(video),
+             "-frames:v", "1", "-q:v", "3", str(dest)],
+            capture_output=True, timeout=180, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("frame extraction failed for %s: %s", video.name, exc)
+        return False
+    if dest.exists() and dest.stat().st_size > 1000:
+        return True
+    dest.unlink(missing_ok=True)
+    return False
+
+
+def _ensure_artwork(directory: Path, stem: str, kind: str, entry: dict, video: Path) -> None:
+    """YouTube's own thumbnail if there is one, otherwise a frame from the file."""
+    if any((directory / f"{stem}{IMAGE_SUFFIX[kind]}{e}").exists() for e in _IMAGE_EXTS):
+        return
+    dest = directory / f"{stem}{IMAGE_SUFFIX[kind]}.jpg"
+    if _fetch_thumbnail(entry, dest):
+        return
+    _extract_frame(video, dest, entry.get("duration"))
+
+
 def _write_show_artwork(show_dir: Path, season_dir: Path, stem: str, entry: dict) -> None:
     """Give the show folder a poster Jellyfin will actually use.
 
@@ -420,7 +458,13 @@ def _write_show_artwork(show_dir: Path, season_dir: Path, stem: str, entry: dict
             except OSError as exc:
                 logger.warning("could not write the show poster for %s: %s", show_dir.name, exc)
                 return
-    _fetch_thumbnail(entry, show_dir / "poster.jpg")
+    if _fetch_thumbnail(entry, show_dir / "poster.jpg"):
+        return
+    for ext in (".webm", ".mkv", ".mp4"):
+        episode = season_dir / f"{stem}{ext}"
+        if episode.exists():
+            _extract_frame(episode, show_dir / "poster.jpg", entry.get("duration"))
+            return
 
 
 def _write_metadata(directory: Path, stem: str, entry: dict, kind: str) -> None:

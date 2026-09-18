@@ -259,10 +259,13 @@ singles/<Creator>/<Title>.ext                                          # movies
   natively, so there is no API coupling and nothing to break on a Jellyfin upgrade.
   `tvshow.nfo` per show, `<episode>.nfo` / `<movie>.nfo` per file.
 - Artwork is renamed to the suffix Jellyfin looks for: `-thumb` (episodes), `-poster` (movies).
-- **Every item ends up with artwork.** yt-dlp's `writethumbnail` silently produces nothing for
-  some items (over half of one real library had none), so when no image sidecar lands the
-  thumbnail URL from the info dict is fetched directly. A response under 1 KB is rejected —
-  an error page would otherwise be written as a corrupt "image" that looks present to Jellyfin.
+- **Every item ends up with artwork**, in this order: the sidecar yt-dlp wrote → the thumbnail
+  URL from the info dict → a frame extracted from the video with ffmpeg. `writethumbnail`
+  silently produces nothing for some items (over half of one real library had none), and older
+  content often cannot be matched to a YouTube video at all, so both fallbacks are needed. A
+  fetched response under 1 KB is rejected — an error page would otherwise be written as a
+  corrupt "image" that looks present to Jellyfin. The frame is taken ~10% in, never at the
+  start, where videos are routinely black or showing a per-channel intro.
 - **Each show gets a `poster` at the SHOW root**, written by the episode that creates the show.
   A tvshows library looks for the poster there, not on the episodes, so a series whose episodes
   all have artwork still renders as a blank tile without it. YouTube has no artwork for a
