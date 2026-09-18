@@ -25,6 +25,7 @@ unrelated programme's artwork and episode titles on top of these files.
 
 import html
 import json
+import urllib.request
 import logging
 import os
 import re
@@ -337,6 +338,9 @@ def place(abs_path: str, entry: dict, media_root: str) -> str:
             src.rename(dest)
 
         _move_sidecars(src, Path(directory), stem, kind)
+        if not any((Path(directory) / f"{stem}{IMAGE_SUFFIX[kind]}{e}").exists()
+                   for e in _IMAGE_EXTS):
+            _fetch_thumbnail(entry, Path(directory) / f"{stem}{IMAGE_SUFFIX[kind]}.jpg")
         _write_metadata(Path(directory), stem, entry, kind)
         return str(dest)
     except OSError as exc:
@@ -369,6 +373,56 @@ def _move_sidecars(src: Path, directory: Path, stem: str, kind: str) -> None:
             logger.warning("could not move sidecar %s: %s", name, exc)
 
 
+def _fetch_thumbnail(entry: dict, dest: Path) -> bool:
+    """Download the item's own YouTube thumbnail.
+
+    yt-dlp's `writethumbnail` normally leaves one beside the media, but it
+    silently produces nothing for some items -- more than half of one real
+    library had no artwork at all. The info dict still carries the URL, so
+    fetch it rather than leaving the item blank. Best resolution first.
+    """
+    urls = []
+    for t in reversed(entry.get("thumbnails") or []):
+        if t.get("url"):
+            urls.append(t["url"])
+    if entry.get("thumbnail"):
+        urls.insert(0, entry["thumbnail"])
+    for url in urls[:4]:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            data = urllib.request.urlopen(req, timeout=20).read()
+            if len(data) < 1000:      # an error page, not an image
+                continue
+            dest.write_bytes(data)
+            return True
+        except Exception as exc:
+            logger.debug("thumbnail fetch failed for %s: %s", url, exc)
+    return False
+
+
+def _write_show_artwork(show_dir: Path, season_dir: Path, stem: str, entry: dict) -> None:
+    """Give the show folder a poster Jellyfin will actually use.
+
+    A tvshows library looks for poster/folder/cover at the SHOW root, not on
+    the episodes, so a series whose episodes all have artwork still shows up as
+    a blank tile. YouTube has no artwork for a playlist as such -- its cover is
+    just the first video's thumbnail -- so the episode that creates the show
+    supplies it, which reproduces what YouTube itself displays.
+    """
+    if any((show_dir / f"poster{e}").exists() for e in _IMAGE_EXTS):
+        return
+    for ext in _IMAGE_EXTS:
+        src = season_dir / f"{stem}{IMAGE_SUFFIX['series']}{ext}"
+        if src.exists():
+            try:
+                (show_dir / f"poster{ext}").write_bytes(src.read_bytes())
+                return
+            except OSError as exc:
+                logger.warning("could not write the show poster for %s: %s", show_dir.name, exc)
+                return
+    _fetch_thumbnail(entry, show_dir / "poster.jpg")
+
+
 def _write_metadata(directory: Path, stem: str, entry: dict, kind: str) -> None:
     try:
         if kind == "series":
@@ -386,6 +440,7 @@ def _write_metadata(directory: Path, stem: str, entry: dict, kind: str) -> None:
             show_nfo = directory.parent / "tvshow.nfo"
             if not show_nfo.exists():
                 show_nfo.write_text(tvshow_nfo(entry), encoding="utf-8")
+            _write_show_artwork(directory.parent, directory, stem, entry)
         else:
             (directory / f"{stem}.nfo").write_text(movie_nfo(entry), encoding="utf-8")
     except (OSError, ValueError, IndexError) as exc:

@@ -287,3 +287,98 @@ def test_nfo_is_written_when_the_episode_title_starts_with_s(tmp_path):
               uploader="MrDeriv", id="abc")
     new = L.place(str(video), e, str(tmp_path))
     assert os.path.exists(os.path.splitext(new)[0] + ".nfo"), os.listdir(os.path.dirname(new))
+
+
+# --- artwork ------------------------------------------------------------
+#
+# A tvshows library looks for the poster at the SHOW root, not on the
+# episodes, so a series whose episodes all have artwork still renders as a
+# blank tile without this. Of 32 real shows, 0 had a poster.
+
+def _place_episode(tmp_path, title="Ep #4", with_image=True, **kw):
+    src = tmp_path / "in"
+    src.mkdir(exist_ok=True)
+    v = src / f"{title}.webm"
+    v.write_text("v")
+    if with_image:
+        (src / f"{title}.webp").write_bytes(b"x" * 2000)
+    e = entry(title=title, playlist_title="A Show", uploader="C", id="vid1", **kw)
+    return L.place(str(v), e, str(tmp_path)), e
+
+
+def test_a_show_gets_a_poster_from_the_episode_that_creates_it(tmp_path):
+    new, _ = _place_episode(tmp_path)
+    show_dir = tmp_path / "series" / "C - A Show"
+    assert (show_dir / "poster.webp").exists(), sorted(os.listdir(show_dir))
+    # ...and the episode keeps its own thumb
+    assert any(p.name.endswith("-thumb.webp") for p in (show_dir / "Season 01").iterdir())
+
+
+def test_an_existing_show_poster_is_never_overwritten(tmp_path):
+    _place_episode(tmp_path)
+    poster = tmp_path / "series" / "C - A Show" / "poster.webp"
+    poster.write_bytes(b"chosen by hand")
+    src = tmp_path / "in2"
+    src.mkdir()
+    v = src / "Ep #5.webm"
+    v.write_text("v")
+    (src / "Ep #5.webp").write_bytes(b"y" * 2000)
+    L.place(str(v), entry(title="Ep #5", playlist_title="A Show", uploader="C", id="v2"), str(tmp_path))
+    assert poster.read_bytes() == b"chosen by hand"
+
+
+def test_a_missing_thumbnail_is_fetched_from_youtube(monkeypatch, tmp_path):
+    # yt-dlp silently writes no thumbnail for some items; the info dict still
+    # carries the URL, so the item must not be left blank.
+    calls = []
+
+    class _Resp:
+        def read(self): return b"i" * 5000
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=0):
+        calls.append(getattr(req, "full_url", req))
+        return _Resp()
+
+    monkeypatch.setattr(L.urllib.request, "urlopen", fake_urlopen)
+    new, _ = _place_episode(tmp_path, title="Ep #9", with_image=False,
+                            thumbnail="https://i.ytimg.com/vi/vid1/maxresdefault.jpg")
+    season = os.path.dirname(new)
+    assert any(n.endswith("-thumb.jpg") for n in os.listdir(season)), os.listdir(season)
+    assert calls, "no thumbnail was fetched"
+
+
+def test_a_failed_thumbnail_fetch_never_breaks_the_download(monkeypatch, tmp_path):
+    def boom(req, timeout=0):
+        raise OSError("network down")
+
+    monkeypatch.setattr(L.urllib.request, "urlopen", boom)
+    new, _ = _place_episode(tmp_path, title="Ep #7", with_image=False,
+                            thumbnail="https://example.invalid/x.jpg")
+    assert os.path.exists(new)          # the media still landed
+
+
+def test_a_tiny_response_is_not_accepted_as_artwork(monkeypatch, tmp_path):
+    # An error page returns 200 with a short body; writing it would leave a
+    # corrupt "image" that looks present to Jellyfin.
+    class _Resp:
+        def read(self): return b"404"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(L.urllib.request, "urlopen", lambda req, timeout=0: _Resp())
+    new, _ = _place_episode(tmp_path, title="Ep #8", with_image=False,
+                            thumbnail="https://example.invalid/x.jpg")
+    season = os.path.dirname(new)
+    assert not any(n.endswith("-thumb.jpg") for n in os.listdir(season))
+
+
+def test_a_single_gets_a_poster_suffix_not_a_thumb(tmp_path):
+    src = tmp_path / "in"
+    src.mkdir()
+    v = src / "Loose Video.webm"
+    v.write_text("v")
+    (src / "Loose Video.webp").write_bytes(b"x" * 2000)
+    new = L.place(str(v), entry(title="Loose Video", uploader="Naomi Jon"), str(tmp_path))
+    assert os.path.exists(os.path.join(os.path.dirname(new), "Loose Video-poster.webp"))
