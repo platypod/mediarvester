@@ -103,6 +103,30 @@ def is_probably_collection_url(url: str) -> bool:
     return False
 
 
+# yt-dlp's default selector, "bv*+ba/b", ends in "/b": when no adaptive
+# (video-only + audio-only) pair can be built it silently settles for the best
+# single pre-muxed file. On YouTube that file is itag 18, capped at 360p -- and
+# adaptive formats vanish from the list whenever the PO Token fetch hiccups
+# ("mweb client https formats require a GVS PO Token which was not provided.
+# They will be skipped"). So a transient sidecar blip turned into a "successful"
+# 360p download, three times now (2026-08-20, 2026-09-18, 2026-09-25/27; see
+# docs/incidents/2026-10-04-silent-360p-fallback.md). YouTube always publishes
+# adaptive formats, so for it the muxed fallback is never legitimate: leave it
+# out and let the item fail loudly, into the existing auto-retry schedule.
+# Other platforms (X, Instagram, ...) routinely serve only a muxed file, so
+# they keep the fallback.
+_FORMAT_DEFAULT = "bv*+ba/b"
+_FORMAT_ADAPTIVE_ONLY = "bv*+ba"
+_YOUTUBE_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
+
+
+def _format_for(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    if any(host == h or host.endswith(f".{h}") for h in _YOUTUBE_HOSTS):
+        return _FORMAT_ADAPTIVE_ONLY
+    return _FORMAT_DEFAULT
+
+
 class _YtDlpLogAdapter:
     """Routes yt-dlp's own internal reporting through our logger instead of a
     raw, unformatted write to stderr -- which is what it does by default even
@@ -123,6 +147,11 @@ class _YtDlpLogAdapter:
     def __init__(self, download_id: int) -> None:
         self._download_id = download_id
         self.last_error: str | None = None
+        # The "formats require a GVS PO Token ... will be skipped" warning is
+        # the *cause* of a later, generic "Requested format is not available"
+        # error under the adaptive-only selector (see _format_for) -- keep it
+        # so the failure that reaches the DB names the real reason.
+        self.po_token_warning: str | None = None
 
     def debug(self, msg: str) -> None:
         # yt-dlp routes its normal status/progress chatter here too (as
@@ -132,6 +161,8 @@ class _YtDlpLogAdapter:
 
     def warning(self, msg: str) -> None:
         self.last_error = msg
+        if "PO Token" in msg:
+            self.po_token_warning = msg
         logger.warning("download %d: %s", self._download_id, msg)
 
     def error(self, msg: str) -> None:
@@ -579,7 +610,9 @@ class Downloader:
                             )
 
                 log_adapter = _YtDlpLogAdapter(download_id)
-                opts = self._build_opts(download_id, owner, force, playlist_items, folder_hint, log_adapter)
+                opts = self._build_opts(
+                    download_id, owner, force, playlist_items, folder_hint, log_adapter, url=url
+                )
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                 if not info:
@@ -592,6 +625,8 @@ class Downloader:
                     # DB's error column both end up with nothing more specific than
                     # "no media extracted for <url>".
                     reason = log_adapter.last_error
+                    if reason and log_adapter.po_token_warning and "format is not available" in reason:
+                        reason = f"{reason} (adaptive formats skipped: {log_adapter.po_token_warning})"
                     message = f"no media extracted for {url}"
                     if reason:
                         message = f"{message}: {reason}"
@@ -625,6 +660,7 @@ class Downloader:
         playlist_items: str | None = None,
         folder_hint: str | None = None,
         log_adapter: "_YtDlpLogAdapter | None" = None,
+        url: str = "",
     ) -> dict:
         # A folder_hint (set by the poller when a newly-discovered video
         # matches an already-downloaded playlist -- see poller.py) replaces
@@ -653,20 +689,12 @@ class Downloader:
             # content needs -- mweb doesn't remove that requirement, it just
             # means most public videos no longer depend on cookie freshness.
             "extractor_args": {"youtube": {"player_client": ["mweb"]}},
-            # No explicit "format" override -- yt-dlp's default
-            # (bestvideo*+bestaudio/best) picks full adaptive/HD quality.
-            # 2026-08-20/21 incident: YouTube's "bind GVS PO Token to video
-            # ID" A/B test 403'd every adaptive request through mweb+bgutil;
-            # briefly worked around here by forcing the 360p progressive
-            # stream, which is exactly the quality regression this project
-            # doesn't want to ship. Fixed properly by the pot-provider sidecar
-            # image bump to 1.3.2 (mints tokens from the homepage challenge +
-            # ytcfg -- see stack/values/default/media/mediarvester.yaml and
-            # docs/incidents/2026-08-20-youtube-403-and-oom.md), confirmed to
-            # restore full adaptive downloads. Left un-overridden here so a
-            # future site-side issue surfaces as a visible failure (and the
-            # /api/settings/service-status banner) rather than silently
-            # degrading everyone's quality again.
+            # Never fall back to a pre-muxed file on YouTube -- see _format_for.
+            # (2026-08-20 incident: this used to be forced to the 360p
+            # progressive stream as a stopgap for the GVS PO Token 403s; fixed
+            # by the pot-provider sidecar bump to 1.3.2, see
+            # docs/incidents/2026-08-20-youtube-403-and-oom.md.)
+            "format": _format_for(url),
             # Skip unavailable/age-restricted/private items instead of aborting the whole job.
             # Critical for playlists that mix public and restricted content.
             "ignoreerrors": True,
