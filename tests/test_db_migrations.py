@@ -110,3 +110,34 @@ async def test_create_all_preserves_existing_rows_when_adding_columns():
         assert row.url == "https://example.com/old-row"
         assert row.owner == "reivi"
         assert row.retry_count == 0  # the new column's default, backfilled
+
+
+async def test_create_all_adds_playlist_columns_to_media_item_and_backfills_video_ids():
+    async with engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS media_item"))
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE media_item (
+                    id INTEGER PRIMARY KEY, title TEXT NOT NULL, platform TEXT,
+                    source_url TEXT NOT NULL, local_path TEXT NOT NULL, thumbnail_path TEXT,
+                    duration_seconds INTEGER, owner TEXT NOT NULL DEFAULT 'anonymous',
+                    download_id INTEGER NOT NULL, created_at TIMESTAMP,
+                    width INTEGER, height INTEGER, vcodec TEXT, acodec TEXT, abr FLOAT
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO media_item (title, source_url, local_path, download_id) "
+                "VALUES ('t', 'https://www.youtube.com/watch?v=abc123', 'x.mp4', 1)"
+            )
+        )
+
+    await create_all()
+
+    async with engine.begin() as conn:
+        row = (await conn.execute(text("SELECT video_id, playlist_pk FROM media_item"))).first()
+    assert row.video_id == "abc123"
+    assert row.playlist_pk is None

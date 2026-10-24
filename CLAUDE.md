@@ -276,6 +276,23 @@ singles/<Creator>/<Title>.ext                                          # movies
 > metadata providers switched off, or Jellyfin will match "LE TUNNEL" against TheTVDB and
 > overwrite these files' metadata with an unrelated programme's.
 
+### Playlist ownership (`services/playlists.py`)
+
+A video fetched on its own (channel poll, manual URL, auto-retry) carries no playlist context,
+so the layout used to file it in `singles/`. Followed playlist Sources and playlists downloaded
+in full are therefore recorded locally (`Playlist` + `PlaylistMember`), and `_on_success` asks
+that registry which playlist owns the video; `library_layout.OWNED_KEY` then forces series
+placement (new show → E01, existing → next number on disk). Locally a video has **one** owner:
+followed playlists first, then earliest recorded; the first match wins.
+
+- Unknown video + stale (>`PLAYLIST_REFRESH_TTL_SECONDS`, default 600) followed playlist →
+  that playlist is re-fetched (under the shared scan lock), stopping at the first hit.
+- A video downloaded before its playlist listed it is moved into the show by
+  `reconcile_playlist` on the next poll of that playlist — only if it was downloaded after the
+  playlist was first recorded. Older files in `singles/` are **report only**:
+  `GET /api/media/reconcile-preview`. Files already inside a show are never moved.
+- `Download.folder_hint` only affects yt-dlp's scratch folder; placement does not read it.
+
 ### Cookies upload (`api/settings.py`)
 
 - `POST /api/settings/cookies` — accepts a multipart file upload, writes to

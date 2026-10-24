@@ -1,7 +1,7 @@
 from datetime import datetime
 from os import environ
 
-from sqlalchemy import JSON, ForeignKey, text
+from sqlalchemy import JSON, ForeignKey, UniqueConstraint, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -121,6 +121,43 @@ class MediaItem(Base):
     vcodec: Mapped[str | None]
     acodec: Mapped[str | None]
     abr: Mapped[float | None]
+    # YouTube video id, parsed from source_url (backfilled for old rows in
+    # create_all) -- the key playlist membership is matched on.
+    video_id: Mapped[str | None] = mapped_column(index=True)
+    # The Playlist (row id, not YouTube's list id) whose show this file was
+    # filed into, if any. Set means the file is owned: reconciliation never
+    # moves it again.
+    playlist_pk: Mapped[int | None] = mapped_column(ForeignKey("playlist.id"), nullable=True)
+
+
+class Playlist(Base):
+    """A playlist this owner follows or has downloaded in full, recorded
+    locally so a video fetched on its own can still be filed into the
+    playlist's show. See services/playlists.py."""
+
+    __tablename__ = "playlist"
+    __table_args__ = (UniqueConstraint("owner", "playlist_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner: Mapped[str] = mapped_column(default="anonymous", server_default="anonymous")
+    playlist_id: Mapped[str]  # YouTube's `list=` id
+    title: Mapped[str]
+    url: Mapped[str]
+    creator: Mapped[str | None]
+    # A followed playlist (a Source) outranks one merely downloaded once.
+    followed: Mapped[bool] = mapped_column(default=False, server_default="0")
+    source_id: Mapped[int | None] = mapped_column(ForeignKey("source.id"), nullable=True)
+    members_refreshed_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+
+class PlaylistMember(Base):
+    __tablename__ = "playlist_member"
+    __table_args__ = (UniqueConstraint("playlist_pk", "video_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    playlist_pk: Mapped[int] = mapped_column(ForeignKey("playlist.id", ondelete="CASCADE"), index=True)
+    video_id: Mapped[str] = mapped_column(index=True)
 
 
 async def get_session():
@@ -211,3 +248,29 @@ async def create_all() -> None:
             await conn.execute(text("ALTER TABLE download ADD COLUMN vcodec TEXT"))
             await conn.execute(text("ALTER TABLE download ADD COLUMN acodec TEXT"))
             await conn.execute(text("ALTER TABLE download ADD COLUMN abr FLOAT"))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT video_id FROM media_item LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE media_item ADD COLUMN video_id TEXT"))
+            await conn.execute(text("ALTER TABLE media_item ADD COLUMN playlist_pk INTEGER"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_media_item_video_id ON media_item (video_id)"))
+
+    await _backfill_video_ids()
+
+
+async def _backfill_video_ids() -> None:
+    from sqlalchemy import select
+
+    from services.playlists import video_id_of
+
+    async with async_session() as session:
+        rows = (
+            await session.execute(select(MediaItem).where(MediaItem.video_id.is_(None)))
+        ).scalars().all()
+        for item in rows:
+            item.video_id = video_id_of(item.source_url)
+        if rows:
+            await session.commit()

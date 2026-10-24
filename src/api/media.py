@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, is_admin
 from db import MediaItem, get_session
+from services import playlists
+from services.downloader import MEDIA_ROOT
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -42,6 +44,14 @@ async def list_media(
         q = q.where(MediaItem.platform == platform)
     result = await session.execute(q)
     return result.scalars().all()
+
+
+@router.get("/reconcile-preview")
+async def reconcile_preview(owner: str = Depends(get_current_user)):
+    """Report-only: standalone files in singles/ that one of this owner's
+    playlists now claims. Nothing is moved -- files downloaded before their
+    playlist was recorded stay put until the owner opts in."""
+    return await playlists.preview_backfill(owner, MEDIA_ROOT)
 
 
 @router.delete("/{media_id}", status_code=204)

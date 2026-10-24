@@ -18,7 +18,7 @@ from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import delete, select, update
 
 from db import Download, MediaItem, async_session
-from services import library_layout
+from services import library_layout, playlists
 from services.episode_naming import resolve_episode
 from services.telemetry import meter, propagate_context, tracer
 
@@ -198,6 +198,22 @@ def _iter_downloaded_entries(info: dict) -> list[dict]:
     return [info]
 
 
+def _creator_of_info(info: dict) -> str | None:
+    """Same fallback chain as the outtmpl folder name; for a collection the
+    top-level dict routinely has none of these, so fall back to its entries."""
+    return (
+        info.get("uploader") or info.get("channel") or info.get("creator")
+        or next(
+            (
+                e.get("uploader") or e.get("channel") or e.get("creator")
+                for e in (info.get("entries") or [])
+                if e
+            ),
+            None,
+        )
+    )
+
+
 def _flat_extract_info(url: str, owner: str) -> dict:
     """Cheap, download-free metadata lookup -- no format resolution, no PO
     Token cost. Shared by `extract_flat_entries` (collections) and
@@ -267,6 +283,11 @@ async def matching_known_playlist(owner: str, entry: dict) -> str | None:
     creator = entry.get("uploader") or entry.get("channel") or entry.get("creator")
     if not video_id or not creator:
         return None
+
+    registered = await playlists.owning_playlist(owner, video_id)
+    if registered:
+        _playlist_matches.add(1, {"matched": True})
+        return registered.title
 
     async with async_session() as session:
         result = await session.execute(
@@ -512,6 +533,10 @@ class Downloader:
         # _progress_hook while it's in flight, and popped once it finishes --
         # see _ordered_playlist_items for why this exists.
         self._index_maps: dict[int, dict[int, int]] = {}
+        # download_id -> every video id the playlist listed before the
+        # download started (a failed entry has no info dict, so this is the
+        # only complete membership list). Feeds services/playlists.py.
+        self._listed_members: dict[int, list[str]] = {}
         # download_id -> {"owner": ..., "title": ...} for whatever is running
         # right now. Feeds the "download.in_progress" gauge (a Grafana
         # state-timeline, same idea as Jellyfin's now-playing panel), so it's
@@ -567,6 +592,7 @@ class Downloader:
                     if entries:
                         playlist_items, position_map = _ordered_playlist_items(entries)
                         self._index_maps[download_id] = position_map
+                        self._listed_members[download_id] = [e["id"] for e in entries if e and e.get("id")]
                 elif folder_hint is None and self._loop:
                     # A single video with no folder_hint already set -- either
                     # a plain URL submitted through the API, or an auto-retry
@@ -643,6 +669,7 @@ class Downloader:
                 self._schedule(self._on_error(download_id, str(exc)))
             finally:
                 self._index_maps.pop(download_id, None)
+                self._listed_members.pop(download_id, None)
                 with self._in_progress_lock:
                     self._in_progress.pop(download_id, None)
 
@@ -856,8 +883,22 @@ class Downloader:
             attempted_count = len(info["entries"]) if "entries" in info else 1
             items: list[MediaItem] = []
             failed_entries: list[dict] = []
+            is_collection = "entries" in info
+            collection_pl = None
+            if is_collection and playlists.is_playlist_url(dl.url):
+                collection_pl = await self._record_downloaded_playlist(dl, info, owner)
             for entry in _iter_downloaded_entries(info):
-                item = self._build_media_item(entry, owner, download_id, dl.url)
+                # A playlist downloaded in full files its own entries; a lone
+                # video asks the registry which playlist (if any) owns it, so
+                # a channel poll, a manual URL and an auto-retry all land in
+                # the same show.
+                owning = collection_pl
+                if not is_collection:
+                    try:
+                        owning = await playlists.resolve_owner(owner, entry)
+                    except Exception as exc:
+                        logger.warning("download %d: playlist lookup failed, filing it standalone: %s", download_id, exc)
+                item = self._build_media_item(entry, owner, download_id, dl.url, owning)
                 if item:
                     items.append(item)
                 else:
@@ -900,17 +941,7 @@ class Downloader:
             # serve as a `matching_known_playlist` candidate for later videos
             # from the same creator (confirmed empirically: every prior
             # collection download in this DB had creator=None).
-            dl.creator = (
-                info.get("uploader") or info.get("channel") or info.get("creator")
-                or next(
-                    (
-                        e.get("uploader") or e.get("channel") or e.get("creator")
-                        for e in (info.get("entries") or [])
-                        if e
-                    ),
-                    None,
-                )
-            )
+            dl.creator = _creator_of_info(info)
             dl.current_title = None
 
             for item in items:
@@ -951,9 +982,34 @@ class Downloader:
                 logger.info("download %d done: %d item(s) saved", download_id, len(items))
             self._schedule_retries(download_id, failed_entries, owner, source_id, retry_count)
 
+    async def _record_downloaded_playlist(self, dl: Download, info: dict, owner: str):
+        """Remember a playlist downloaded in full, so later lone videos from
+        it are filed into the same show."""
+        playlist_id = playlists.playlist_id_from_url(dl.url) or info.get("id")
+        if not playlist_id:
+            return None
+        member_ids = self._listed_members.get(dl.id) or [
+            e["id"] for e in info.get("entries") or [] if e and e.get("id")
+        ]
+        try:
+            return await playlists.record_playlist(
+                owner=owner, playlist_id=playlist_id, title=info.get("title") or "",
+                url=dl.url, creator=_creator_of_info(info), member_ids=member_ids,
+            )
+        except Exception as exc:
+            logger.warning("download %d: could not record playlist %s: %s", dl.id, playlist_id, exc)
+            return None
+
     def _build_media_item(
-        self, entry: dict, owner: str, download_id: int, fallback_url: str
+        self, entry: dict, owner: str, download_id: int, fallback_url: str, owning=None
     ) -> MediaItem | None:
+        if owning is not None:
+            # Ownership is stated explicitly: a lone video's info says nothing
+            # about its playlist, and library_layout files by what the entry says.
+            entry = {
+                **entry, "playlist_title": owning.title, "playlist_id": owning.playlist_id,
+                library_layout.OWNED_KEY: True,
+            }
         requested = entry.get("requested_downloads") or [{}]
         abs_path = requested[0].get("filepath", "")
         # `filepath` can be present with the entry otherwise indicating the
@@ -993,16 +1049,10 @@ class Downloader:
 
         # The thumbnail now carries Jellyfin's own suffix, so it is no longer
         # just the media file's stem with the extension swapped.
-        thumbnail_path: str | None = None
-        base = Path(MEDIA_ROOT) / local_path
-        suffix = library_layout.IMAGE_SUFFIX[library_layout.classify(entry, MEDIA_ROOT)]
-        for ext in (".jpg", ".png", ".webp"):
-            for candidate in (base.with_name(base.stem + suffix + ext), base.with_suffix(ext)):
-                if candidate.exists():
-                    thumbnail_path = os.path.relpath(str(candidate), MEDIA_ROOT)
-                    break
-            if thumbnail_path:
-                break
+        thumb = library_layout.find_thumbnail(
+            Path(MEDIA_ROOT) / local_path, library_layout.classify(entry, MEDIA_ROOT)
+        )
+        thumbnail_path = os.path.relpath(str(thumb), MEDIA_ROOT) if thumb else None
 
         profile = _extract_media_profile(entry, requested)
 
@@ -1015,6 +1065,8 @@ class Downloader:
             duration_seconds=entry.get("duration"),
             owner=owner,
             download_id=download_id,
+            video_id=entry.get("id") or playlists.video_id_of(entry.get("webpage_url") or fallback_url),
+            playlist_pk=owning.id if owning is not None else None,
             **profile,
         )
 

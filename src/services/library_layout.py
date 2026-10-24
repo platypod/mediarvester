@@ -66,6 +66,12 @@ _DUMP_RE = re.compile(r"^(vid[ée]os|les vid[ée]os|videos|.+ - videos)$", re.IG
 # a folder/playlist by that name is a missing title, not a real playlist.
 _NOT_A_PLAYLIST = {"", "NA", "None"}
 
+# Set on an entry (by services/playlists.py) when the owner's local playlist
+# registry says the video belongs to a playlist. A single video fetched on its
+# own carries no playlist context in yt-dlp's info, so ownership has to be
+# stated explicitly -- see classify.
+OWNED_KEY = "_playlist_owned"
+
 _VIDEO_EXTS = (".webm", ".mkv", ".mp4", ".m4a", ".mov")
 _IMAGE_EXTS = (".webp", ".jpg", ".jpeg", ".png")
 
@@ -144,6 +150,10 @@ def classify(entry: dict, media_root: str | None = None) -> str:
     """
     if not show_name(entry):
         return "singles"
+    if entry.get(OWNED_KEY):
+        # The playlist itself is the justification: a new show starts at
+        # episode 1, an existing one continues from the highest on disk.
+        return "series"
     if episode_number(entry):
         return "series"
     if media_root and _season_dir(entry, media_root).is_dir():
@@ -346,6 +356,65 @@ def place(abs_path: str, entry: dict, media_root: str) -> str:
     except OSError as exc:
         logger.warning("could not place %s into the library layout: %s", src.name, exc)
         return abs_path
+
+
+def find_thumbnail(media_path: Path, kind: str) -> Path | None:
+    """The artwork file sitting beside a placed media file, if any. It carries
+    Jellyfin's own suffix, so it is not just the stem with the extension swapped."""
+    suffix = IMAGE_SUFFIX[kind]
+    for ext in (".jpg", ".png", ".webp"):
+        for candidate in (media_path.with_name(media_path.stem + suffix + ext), media_path.with_suffix(ext)):
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def relocate(abs_path: str, entry: dict, media_root: str, dry_run: bool = False) -> str | None:
+    """Move an already-placed standalone file into the show its playlist
+    defines. Returns the new absolute path (or, with `dry_run`, where it
+    would go), or None when it cannot or should not move.
+
+    `place` only ever handles a fresh download's sidecars; a file that was
+    filed as a single carries a movie .nfo and a `-poster` image instead, so
+    those are converted here rather than orphaned.
+    """
+    src = Path(abs_path)
+    if not src.exists():
+        return None
+    owned = {**entry, OWNED_KEY: True}
+    if classify(owned, media_root) != "series":
+        return None
+    try:
+        directory, stem = target_for(owned, media_root, src.suffix)
+        dest = Path(directory) / f"{stem}{src.suffix}"
+        if dry_run:
+            return str(dest)
+        if dest.exists():
+            return None
+        os.makedirs(directory, exist_ok=True)
+        src.rename(dest)
+
+        old_stem = src.stem
+        for name in sorted(os.listdir(src.parent)):
+            if not name.startswith(old_stem):
+                continue
+            rest = name[len(old_stem):].lower()
+            path = src.parent / name
+            if rest == ".nfo":
+                path.unlink()  # the movie .nfo; the episode one is written below
+            elif rest == ".info.json":
+                path.rename(Path(directory) / f"{stem}.info.json")
+            elif rest.endswith(_IMAGE_EXTS) and (rest.startswith(".") or rest.startswith("-poster.")):
+                ext = rest[len("-poster"):] if rest.startswith("-poster.") else rest
+                path.rename(Path(directory) / f"{stem}{IMAGE_SUFFIX['series']}{ext}")
+
+        _ensure_artwork(Path(directory), stem, "series", owned, dest)
+        _write_metadata(Path(directory), stem, owned, "series")
+        _prune_empty(src.parent, media_root)
+        return str(dest)
+    except OSError as exc:
+        logger.warning("could not relocate %s into its show: %s", src.name, exc)
+        return None
 
 
 def _prune_empty(directory: Path, media_root: str) -> None:

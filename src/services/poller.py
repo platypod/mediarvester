@@ -8,7 +8,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import func, select
 from yt_dlp.utils import RejectedVideoReached
 
+import services.downloader as downloader_module
 from db import Download, MediaItem, Source, async_session
+from services import playlists
 from services.downloader import (
     downloader,
     get_cookies_path,
@@ -39,7 +41,7 @@ _new_entries = meter.create_counter(
 # within the same second, YouTube rate-limited within 30s. This serializes
 # every source's network-heavy work process-wide; a second source's poll
 # simply waits its turn instead of racing the first one to YouTube.
-_youtube_scan_lock = asyncio.Lock()
+_youtube_scan_lock = playlists.scan_lock  # shared with playlist-membership refreshes
 
 
 async def poll_source(source_id: int) -> None:
@@ -59,9 +61,13 @@ async def _poll_source(source_id: int, span) -> None:
 
         cutoff_ts = source.created_at.replace(tzinfo=timezone.utc).timestamp()
         cookies = get_cookies_path(source.owner)
+        followed_playlist = None
         async with _youtube_scan_lock:
             if not source.label:
                 await _label_source(source)
+
+            if playlists.is_playlist_url(source.url):
+                followed_playlist = await _record_followed_playlist(source)
 
             try:
                 loop = asyncio.get_event_loop()
@@ -82,6 +88,14 @@ async def _poll_source(source_id: int, span) -> None:
         if poll_error:
             logger.warning("source %d poll degraded: %s", source_id, poll_error)
         source.last_poll_error = poll_error
+        if followed_playlist:
+            # A video the channel (or a manual URL) fetched before this
+            # playlist listed it is already on disk, so the dedupe below would
+            # skip it for good -- file it into the show now instead.
+            try:
+                await playlists.reconcile_playlist(followed_playlist, downloader_module.MEDIA_ROOT)
+            except Exception as exc:
+                logger.warning("source %d: could not reconcile playlist %r: %s", source_id, followed_playlist.title, exc)
         _polls.add(1, {"result": "degraded" if poll_error else "ok"})
         _new_entries.add(len(entries))
 
@@ -121,6 +135,25 @@ async def _poll_source(source_id: int, span) -> None:
 
         source.last_polled_at = datetime.utcnow()
         await session.commit()
+
+
+async def _record_followed_playlist(source: Source):
+    """Snapshot a followed playlist's membership into the local registry. A
+    failure (rate limit, network) only means the previous snapshot stays."""
+    try:
+        info, ids = await playlists.fetch_member_ids(source.url, source.owner)
+        playlist_id = playlists.playlist_id_from_url(source.url) or info.get("id")
+        if not playlist_id:
+            return None
+        return await playlists.record_playlist(
+            owner=source.owner, playlist_id=playlist_id,
+            title=info.get("title") or source.label or "", url=source.url,
+            creator=info.get("uploader") or info.get("channel"), member_ids=ids,
+            followed=True, source_id=source.id,
+        )
+    except Exception as exc:
+        logger.warning("source %d: could not snapshot playlist membership: %s", source.id, exc)
+        return None
 
 
 async def _label_source(source: Source) -> None:
