@@ -37,6 +37,9 @@ class Download(Base):
     owner: Mapped[str] = mapped_column(default="anonymous", server_default="anonymous")
     source_id: Mapped[int | None] = mapped_column(ForeignKey("source.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    # When a worker actually picked this up (created_at includes time spent
+    # queued behind other downloads). finished_at - started_at is the duration.
+    started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
     # Playlist/channel downloads only -- populated from yt-dlp's per-entry
     # progress hook while a collection is in flight, so the UI can show
@@ -248,6 +251,13 @@ async def create_all() -> None:
             await conn.execute(text("ALTER TABLE download ADD COLUMN vcodec TEXT"))
             await conn.execute(text("ALTER TABLE download ADD COLUMN acodec TEXT"))
             await conn.execute(text("ALTER TABLE download ADD COLUMN abr FLOAT"))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT started_at FROM download LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE download ADD COLUMN started_at TIMESTAMP"))
 
     try:
         async with engine.begin() as conn:

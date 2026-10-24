@@ -34,6 +34,7 @@ class DownloadRead(BaseModel):
     owner: str
     source_id: int | None
     created_at: datetime
+    started_at: datetime | None
     finished_at: datetime | None
     current_index: int | None
     total_entries: int | None

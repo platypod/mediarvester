@@ -14,6 +14,7 @@ export interface Download {
   owner: string
   source_id: number | null
   created_at: string
+  started_at: string | null
   finished_at: string | null
   current_index: number | null
   total_entries: number | null

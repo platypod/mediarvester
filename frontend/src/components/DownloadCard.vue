@@ -1,12 +1,29 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Download } from '../stores/downloads'
 import { formatAudio, formatResolution } from '../utils/mediaProfile'
+import { timingLine } from '../utils/downloadTiming'
 
-defineProps<{ download: Download; showOwner?: boolean }>()
+const props = defineProps<{ download: Download; showOwner?: boolean }>()
 defineEmits<{ delete: [] }>()
 
 const showCompleted = ref(false)
+
+// Ticks once a second so a running download's elapsed time moves between the
+// store's 2s polls; idle (done/error) cards never need it.
+const now = ref(new Date())
+let tick: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  tick = setInterval(() => {
+    if (props.download.status === 'downloading' || props.download.status === 'queued') {
+      now.value = new Date()
+    }
+  }, 1000)
+})
+onBeforeUnmount(() => {
+  if (tick !== null) clearInterval(tick)
+})
+const timing = computed(() => timingLine(props.download, now.value))
 
 const statusClass: Record<string, string> = {
   queued: 'bg-yellow-900/60 text-yellow-300',
@@ -70,6 +87,7 @@ function formatTime(iso: string): string {
         <p v-if="download.title" class="text-xs text-gray-500 truncate mt-0.5">
           {{ download.url }}
         </p>
+        <p v-if="timing" class="text-xs text-gray-500 mt-0.5">{{ timing }}</p>
         <p v-if="download.error" class="text-xs text-red-400 mt-1">{{ download.error }}</p>
         <p v-if="download.status === 'error'" class="text-xs mt-0.5">
           <span v-if="download.retry_at" class="text-gray-500">

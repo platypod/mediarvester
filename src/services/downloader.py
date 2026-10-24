@@ -569,6 +569,7 @@ class Downloader:
         _downloads_active.add(1)
         with self._in_progress_lock:
             self._in_progress[download_id] = {"owner": owner, "title": _RESOLVING_TITLE_PLACEHOLDER}
+        self._schedule(self._mark_started(download_id))
         status = "error"
         platform = "unknown"
 
@@ -861,6 +862,13 @@ class Downloader:
                             download_id, len(completed), playlist_count, title,
                         )
             await session.commit()
+
+    async def _mark_started(self, download_id: int) -> None:
+        async with async_session() as session:
+            dl = await session.get(Download, download_id)
+            if dl:
+                dl.started_at = datetime.utcnow()
+                await session.commit()
 
     async def _set_current_title(self, download_id: int, title: str) -> None:
         async with async_session() as session:
@@ -1259,6 +1267,7 @@ async def recover_interrupted() -> None:
             dl.error = None
             # force=True below discards any partial file, so a fresh run also
             # starts a fresh playlist position rather than showing stale counts.
+            dl.started_at = None
             dl.current_index = None
             dl.total_entries = None
             dl.current_title = None

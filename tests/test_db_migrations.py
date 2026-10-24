@@ -71,7 +71,7 @@ async def test_create_all_adds_missing_columns_to_a_pre_existing_schema():
         await conn.execute(
             text(
                 "SELECT current_index, total_entries, current_title, completed_items, "
-                "retry_count, retry_at, creator, folder_hint FROM download LIMIT 1"
+                "retry_count, retry_at, creator, folder_hint, started_at FROM download LIMIT 1"
             )
         )
 
