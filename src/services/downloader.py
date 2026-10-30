@@ -83,6 +83,22 @@ async def supersede_error_rows(session, url: str, owner: str, exclude_id: int) -
     )
 
 
+async def _url_already_fetched(session, url: str, owner: str) -> bool:
+    """True when this owner already has a finished download or a library item for `url`."""
+    done = (
+        await session.execute(
+            select(Download.id).where(Download.url == url, Download.owner == owner, Download.status == "done").limit(1)
+        )
+    ).first()
+    if done:
+        return True
+    return (
+        await session.execute(
+            select(MediaItem.id).where(MediaItem.source_url == url, MediaItem.owner == owner).limit(1)
+        )
+    ).first() is not None
+
+
 def is_probably_collection_url(url: str) -> bool:
     """Shared with api/downloads.py (dedupe policy) -- also gates the
     playlist-ordering pre-pass below, since that only makes sense for a
@@ -1167,6 +1183,12 @@ class Downloader:
     ) -> None:
         await asyncio.sleep(delay)
         async with async_session() as session:
+            # This timer outlives the row that scheduled it: the poller can
+            # start several chains for one URL while it is failing, and the
+            # first to succeed deletes the others' rows -- not their timers.
+            if await _url_already_fetched(session, url, owner):
+                logger.info("auto-retry attempt %d for %s skipped: already downloaded", retry_count, url)
+                return
             # Carrying the already-known title over means a retry row shows
             # something better than a bare URL immediately, rather than
             # waiting on this attempt to also succeed before it has one.

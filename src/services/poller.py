@@ -108,7 +108,12 @@ async def _poll_source(source_id: int, span) -> None:
                     select(Download)
                     .where(Download.owner == source.owner)
                     .where(Download.url == url)
-                    .where(Download.status.in_(("queued", "downloading", "done")))
+                    .where(
+                        Download.status.in_(("queued", "downloading", "done"))
+                        # A failed attempt with a retry still scheduled: enqueueing
+                        # again would start a second retry chain for the same URL.
+                        | ((Download.status == "error") & (Download.retry_at > datetime.utcnow()))
+                    )
                     .limit(1)
                 )
             ).scalar_one_or_none()

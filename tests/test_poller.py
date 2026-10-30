@@ -298,6 +298,34 @@ async def test_poll_source_skips_entries_already_in_download_table(
     assert enqueued == []
 
 
+async def test_poll_source_skips_entries_with_a_retry_still_pending(
+    session, make_source, make_download, monkeypatch
+):
+    """A failed attempt with retry_at in the future already has a retry chain;
+    enqueueing again would start a second one for the same URL."""
+    from datetime import timedelta
+
+    source = await make_source(session, url="https://www.youtube.com/@Creator")
+    await make_download(
+        session, url="https://www.youtube.com/watch?v=failing", owner=source.owner, status="error",
+        retry_count=1, retry_at=datetime.utcnow() + timedelta(minutes=30),
+    )
+
+    monkeypatch.setattr(poller_module, "_label_source", _async_noop)
+    monkeypatch.setattr(
+        poller_module,
+        "_new_entries_since",
+        lambda *a, **kw: ([{"webpage_url": "https://www.youtube.com/watch?v=failing", "id": "failing"}], None),
+    )
+    enqueued = []
+    monkeypatch.setattr(poller_module.downloader, "enqueue", lambda *a, **kw: enqueued.append(a))
+    monkeypatch.setattr(poller_module, "matching_known_playlist", _async_none)
+
+    await _poll_source(source.id, _FakeSpan())
+
+    assert enqueued == []
+
+
 async def test_poll_source_skips_entries_already_in_media_item_table(
     session, make_source, make_media_item, monkeypatch
 ):

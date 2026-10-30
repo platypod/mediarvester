@@ -169,3 +169,28 @@ def test_retry_schedule_reaches_well_past_youtubes_own_rate_limit_window():
     assert max(_RETRY_DELAYS_SECONDS) >= 24 * 3600
     assert sum(_RETRY_DELAYS_SECONDS[:2]) < 3600  # first couple stay quick
     assert _RETRY_DELAYS_SECONDS[-1] > 3600  # but the schedule does reach past 1h
+
+
+async def test_retry_timer_is_a_noop_once_the_url_has_succeeded(dl, session, make_download, monkeypatch):
+    """Stale timers from other retry chains must not re-download a finished video."""
+    url = "https://example.com/v1"
+    await make_download(session, url=url, owner="reivi", status="done")
+    enqueued = []
+    monkeypatch.setattr(dl, "enqueue", lambda *a, **kw: enqueued.append(a))
+
+    await dl._retry_after_delay(url, "reivi", None, 3, 0)
+
+    assert enqueued == []
+    rows = (await session.execute(select(Download).where(Download.url == url))).scalars().all()
+    assert len(rows) == 1
+
+
+async def test_retry_timer_still_retries_an_unfinished_url(dl, session, make_download, monkeypatch):
+    url = "https://example.com/v2"
+    await make_download(session, url=url, owner="reivi", status="error")
+    enqueued = []
+    monkeypatch.setattr(dl, "enqueue", lambda *a, **kw: enqueued.append(a))
+
+    await dl._retry_after_delay(url, "reivi", None, 1, 0)
+
+    assert len(enqueued) == 1
