@@ -293,6 +293,15 @@ followed playlists first, then earliest recorded; the first match wins.
   `GET /api/media/reconcile-preview`. Files already inside a show are never moved.
 - `Download.folder_hint` only affects yt-dlp's scratch folder; placement does not read it.
 
+### Jellyfin link (`services/jellyfin.py`)
+
+`GET /api/media/{id}/jellyfin` returns `{url}` -- the item's page on Jellyfin -- and the
+Library card shows "Open in Jellyfin" when `/api/settings/me` reports `jellyfin_enabled`
+(any user, for their own items; admins for all). Jellyfin 10.11's `/Items` cannot filter
+by path, so the lookup is a title search whose hits are matched on `Path` against
+`JELLYFIN_MEDIA_ROOT/<local_path>`. Nothing is cached (a moved file gets a new Jellyfin id).
+A miss returns `url: null` and asks Jellyfin to scan that path (`POST /Library/Media/Updated`).
+
 ### Cookies upload (`api/settings.py`)
 
 - `POST /api/settings/cookies` — accepts a multipart file upload, writes to
@@ -338,6 +347,10 @@ In production, FastAPI serves the built `frontend/dist/` as static files under `
 | `OTEL_SERVICE_NAME` | `mediarvester` | Standard OTel env var — see `services/telemetry.py` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(unset)_ | OTLP gRPC target for traces/metrics; unset = exporters idle (no network activity), not a crash |
 | `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | _(unset)_ | Must be `cumulative` for a Mimir-backed collector — it rejects delta payloads |
+| `JELLYFIN_URL` | _(unset)_ | In-cluster Jellyfin API base (e.g. `http://jellyfin:8096`). The "Open in Jellyfin" button needs all four `JELLYFIN_*` vars; any unset = feature off |
+| `JELLYFIN_API_KEY` | _(unset)_ | Jellyfin API key used for the lookup and the scan request |
+| `JELLYFIN_PUBLIC_URL` | _(unset)_ | User-facing Jellyfin URL the link points at (the Traefik host) |
+| `JELLYFIN_MEDIA_ROOT` | _(unset)_ | `MEDIA_ROOT` as **Jellyfin** sees it (prod's Jellyfin is host-native, e.g. `/Users/pittinic/synology/replays`) |
 | `PYROSCOPE_SERVER_ADDRESS` | _(unset)_ | Continuous-profiling backend (not OTLP — see telemetry.py's docstring); unset = profiling disabled |
 
 ---

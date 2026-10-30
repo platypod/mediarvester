@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, is_admin
 from db import MediaItem, get_session
-from services import playlists
+from services import jellyfin, playlists
 from services.downloader import MEDIA_ROOT
 
 router = APIRouter(prefix="/api/media", tags=["media"])
@@ -52,6 +52,25 @@ async def reconcile_preview(owner: str = Depends(get_current_user)):
     playlists now claims. Nothing is moved -- files downloaded before their
     playlist was recorded stay put until the owner opts in."""
     return await playlists.preview_backfill(owner, MEDIA_ROOT)
+
+
+class JellyfinLink(BaseModel):
+    url: str | None
+
+
+@router.get("/{media_id}/jellyfin", response_model=JellyfinLink)
+async def jellyfin_link(
+    media_id: int,
+    owner: str = Depends(get_current_user),
+    admin: bool = Depends(is_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Deep link to this file's page on Jellyfin; `url` is null while Jellyfin
+    hasn't indexed it (a scan of the path has then been requested)."""
+    item = await session.get(MediaItem, media_id)
+    if not item or (item.owner != owner and not admin):
+        raise HTTPException(status_code=404)
+    return {"url": await jellyfin.item_url(item.title, item.local_path)}
 
 
 @router.delete("/{media_id}", status_code=204)

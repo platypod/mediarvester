@@ -33,6 +33,7 @@ onMounted(() => store.fetchAll())
         :key="item.id"
         :item="item"
         :show-owner="settings.isAdmin"
+        :jellyfin="settings.jellyfinEnabled"
         @delete="store.remove(item.id)"
       />
     </div>
