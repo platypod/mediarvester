@@ -51,6 +51,16 @@ def test_playlist_url_detection():
     assert not playlists.is_playlist_url("https://www.youtube.com/watch?v=x")
 
 
+def test_watch_form_playlist_url_is_listed_as_a_playlist(monkeypatch):
+    """A flat listing of `watch?v=X&list=PL` resolves to the single video with no
+    entries, which recorded followed playlists with zero members."""
+    seen = []
+    monkeypatch.setattr(downloader_module, "_flat_extract_info", lambda url, owner: seen.append(url) or {})
+    playlists.fetch_playlist("https://www.youtube.com/watch?v=x&list=PLabc", "me")
+    playlists.fetch_playlist("https://www.youtube.com/playlist?list=PLabc", "me")
+    assert seen == ["https://www.youtube.com/playlist?list=PLabc"] * 2
+
+
 def test_video_id_from_url():
     assert playlists.video_id_of("https://www.youtube.com/watch?v=abc123&t=3") == "abc123"
     assert playlists.video_id_of("https://youtu.be/abc123") == "abc123"

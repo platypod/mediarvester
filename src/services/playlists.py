@@ -61,12 +61,22 @@ def video_id_of(url: str | None) -> str | None:
     return match.group(1) if match else None
 
 
+def canonical_playlist_url(url: str) -> str:
+    """`watch?v=X&list=PL…` -> `playlist?list=PL…`. A flat extraction of the
+    watch form resolves to the single video (`_type: url`, no entries), which
+    would record the playlist with zero members."""
+    playlist_id = playlist_id_from_url(url)
+    if playlist_id and not urlparse(url).path.rstrip("/").lower().endswith("/playlist"):
+        return f"https://www.youtube.com/playlist?list={playlist_id}"
+    return url
+
+
 def fetch_playlist(url: str, owner: str) -> dict:
     """Cheap flat listing of a playlist (id, title, uploader, entries).
     Blocking -- run it in an executor. Kept as its own seam for tests."""
     from services.downloader import _flat_extract_info
 
-    return _flat_extract_info(url, owner)
+    return _flat_extract_info(canonical_playlist_url(url), owner)
 
 
 def _member_ids(info: dict) -> list[str]:
