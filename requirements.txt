@@ -3,7 +3,7 @@ uvicorn[standard]>=0.29.0
 # <2.1: opentelemetry-instrumentation-sqlalchemy refuses 2.1+ and silently drops DB spans.
 sqlalchemy[asyncio]>=2.0.0,<2.1
 aiosqlite>=0.20.0
-asyncpg>=0.29.0
+asyncpg>=0.31.0
 apscheduler>=3.10.0
 yt-dlp>=2026.7.4
 yt-dlp-ejs
