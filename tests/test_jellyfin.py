@@ -121,3 +121,19 @@ async def test_endpoint_is_404_for_another_owners_item(session, make_download, m
 async def test_me_reports_whether_jellyfin_is_enabled(client, configured):
     resp = await client.get("/api/settings/me", headers={"Remote-User": "reivi"})
     assert resp.json()["jellyfin_enabled"] is True
+
+
+async def test_an_episode_is_found_under_its_trimmed_title(configured, calls, monkeypatch):
+    """Item 1118: the video is titled "... #10" but Jellyfin names the episode
+    without the marker, so the search by stored title finds nothing."""
+    path = "series/Domingo - Koh-Lanta/Season 01/Domingo - Koh-Lanta - S01E11 - IL VA RETOURNER LE JEU ! (REACT).webm"
+    hit = {"Items": [{"Id": "ep11", "Path": f"/Users/x/synology/replays/{path}"}]}
+
+    def fake(method, url, key, body=None):
+        calls.seen.append((method, url, body))
+        return hit if "RETOURNER" in url and "%2310" not in url else {"Items": []}
+
+    monkeypatch.setattr(jellyfin, "_request", fake)
+    url = await jellyfin.item_url("IL VA RETOURNER LE JEU ! (REACT) #10", path)
+    assert url.endswith("id=ep11")
+    assert len(calls.seen) == 2

@@ -19,6 +19,7 @@ and `JELLYFIN_MEDIA_ROOT` are set.
 import asyncio
 import json
 import logging
+import re
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -60,25 +61,41 @@ def _request(method: str, url: str, key: str, body: dict | None = None) -> dict 
     return json.loads(raw) if raw else None
 
 
+_EPISODE_PREFIX = re.compile(r"^.* - S\d+E\d+ - ")
+
+
+def _search_terms(title: str, local_path: str) -> list[str]:
+    """What Jellyfin may have named the item, most likely first.
+
+    The stored title is the video's own, but an episode's NFO carries the title
+    with its "#10" marker trimmed (library_layout.episode_title), and that is
+    the name Jellyfin indexes -- so the file name, which is built from it, is
+    the second candidate.
+    """
+    stem = _EPISODE_PREFIX.sub("", local_path.rsplit("/", 1)[-1].rsplit(".", 1)[0])
+    return [t for t in dict.fromkeys((title, stem)) if t]
+
+
 def _find_item_id(title: str, local_path: str) -> str | None:
     cfg = _config()
     if not cfg:
         return None
     base, key, _, root = cfg
     expected = _norm(f"{root}/{local_path}")
-    query = urllib.parse.urlencode(
-        {
-            "Recursive": "true",
-            "IncludeItemTypes": "Movie,Episode",
-            "Fields": "Path",
-            "SearchTerm": title,
-            "Limit": SEARCH_LIMIT,
-        }
-    )
-    result = _request("GET", f"{base}/Items?{query}", key) or {}
-    for item in result.get("Items") or []:
-        if _norm(item.get("Path") or "") == expected:
-            return item.get("Id")
+    for term in _search_terms(title, local_path):
+        query = urllib.parse.urlencode(
+            {
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie,Episode",
+                "Fields": "Path",
+                "SearchTerm": term,
+                "Limit": SEARCH_LIMIT,
+            }
+        )
+        result = _request("GET", f"{base}/Items?{query}", key) or {}
+        for item in result.get("Items") or []:
+            if _norm(item.get("Path") or "") == expected:
+                return item.get("Id")
     return None
 
 
