@@ -344,7 +344,7 @@ def place(abs_path: str, entry: dict, media_root: str) -> str:
         dest = Path(directory) / f"{stem}{src.suffix}"
         if dest != src:
             if dest.exists():
-                logger.warning("%s already exists, leaving %s where it is", dest.name, src.name)
+                logger.error("%s already exists, leaving %s outside the library layout", dest.name, src.name)
                 return abs_path
             src.rename(dest)
 
@@ -354,7 +354,7 @@ def place(abs_path: str, entry: dict, media_root: str) -> str:
         _prune_empty(src.parent, media_root)
         return str(dest)
     except OSError as exc:
-        logger.warning("could not place %s into the library layout: %s", src.name, exc)
+        logger.error("could not place %s into the library layout, leaving it at %s: %s", src.name, src, exc)
         return abs_path
 
 

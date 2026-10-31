@@ -911,7 +911,11 @@ class Downloader:
             collection_pl = None
             if is_collection and playlists.is_playlist_url(dl.url):
                 collection_pl = await self._record_downloaded_playlist(dl, info, owner)
+            duplicates = 0
             for entry in _iter_downloaded_entries(info):
+                if await self._discard_if_in_library(session, entry, owner, dl.url):
+                    duplicates += 1
+                    continue
                 # A playlist downloaded in full files its own entries; a lone
                 # video asks the registry which playlist (if any) owns it, so
                 # a channel poll, a manual URL and an auto-retry all land in
@@ -930,6 +934,19 @@ class Downloader:
 
             retry_count = dl.retry_count
             source_id = dl.source_id
+
+            if not items and duplicates and not failed_entries:
+                # Everything this download fetched is already in the library.
+                dl.status = "done"
+                dl.progress = 100.0
+                dl.finished_at = datetime.utcnow()
+                dl.title = info.get("title")
+                dl.platform = info.get("extractor")
+                dl.creator = _creator_of_info(info)
+                dl.current_title = None
+                await session.commit()
+                logger.info("download %d done: %d duplicate(s) discarded, nothing new", download_id, duplicates)
+                return
 
             if not items:
                 # ignoreerrors=True means a playlist/channel download where
@@ -996,7 +1013,7 @@ class Downloader:
                     download_id, result.rowcount,
                 )
 
-            skipped = attempted_count - len(items)
+            skipped = attempted_count - len(items) - duplicates
             if skipped:
                 logger.warning(
                     "download %d done: %d item(s) saved, %d skipped (see prior warnings)",
@@ -1005,6 +1022,40 @@ class Downloader:
             else:
                 logger.info("download %d done: %d item(s) saved", download_id, len(items))
             self._schedule_retries(download_id, failed_entries, owner, source_id, retry_count)
+
+    async def _discard_if_in_library(self, session, entry: dict, owner: str, fallback_url: str) -> bool:
+        """Drop a freshly downloaded file whose video this owner already has.
+
+        A second copy can only go wrong: placed, it becomes a phantom extra
+        episode; left where it landed (the destination exists), it is a
+        multi-GB stray with a database row pointing at it -- that is how the
+        Brogniart video ended up three times over. True when it was discarded.
+        """
+        video_id = entry.get("id") or playlists.video_id_of(entry.get("webpage_url") or fallback_url)
+        filepath = (entry.get("requested_downloads") or [{}])[0].get("filepath", "")
+        if not video_id or not filepath or not Path(filepath).exists():
+            return False
+        existing = (
+            await session.execute(
+                select(MediaItem.local_path).where(MediaItem.owner == owner, MediaItem.video_id == video_id)
+            )
+        ).scalars().all()
+        kept = [Path(MEDIA_ROOT) / p for p in existing if (Path(MEDIA_ROOT) / p).exists()]
+        new = Path(filepath)
+        # Nothing to compare against, or yt-dlp wrote over the very file we keep.
+        if not kept or new in kept:
+            return False
+        for sibling in new.parent.glob(f"{glob.escape(new.stem)}.*"):
+            try:
+                sibling.unlink()
+            except OSError as exc:
+                logger.warning("could not remove duplicate %s: %s", sibling.name, exc)
+        library_layout._prune_empty(new.parent, MEDIA_ROOT)
+        logger.warning(
+            "video %s is already in the library (%s); discarded the new copy %s",
+            video_id, kept[0].name, new.name,
+        )
+        return True
 
     async def _record_downloaded_playlist(self, dl: Download, info: dict, owner: str):
         """Remember a playlist downloaded in full, so later lone videos from

@@ -461,3 +461,63 @@ async def test_media_item_profile_falls_back_to_entry_level_fields(session, make
     assert item.vcodec == "h264"
     assert item.acodec == "aac"
     assert item.abr == 96.0
+
+
+def _youtube_info(video_path, video_id="dupvid1"):
+    return {
+        "id": video_id,
+        "title": "Some Video",
+        "extractor": "youtube",
+        "uploader": "MrDeriv",
+        "requested_downloads": [{"filepath": str(video_path)}],
+        "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+        "duration": 120,
+    }
+
+
+async def test_redownload_of_a_video_already_in_the_library_is_discarded(
+    session, make_download, tmp_path, monkeypatch
+):
+    """The Brogniart incident: a repeat download left a multi-GB stray copy and
+    a row pointing at it. The new copy must vanish without a row."""
+    from db import MediaItem
+    from sqlalchemy import select
+
+    monkeypatch.setattr(downloader_module, "MEDIA_ROOT", str(tmp_path))
+    first = await make_download(session, url="https://www.youtube.com/watch?v=dupvid1")
+    first_path = tmp_path / "MrDeriv" / "Some Video.mp4"
+    _write(first_path)
+    await Downloader()._on_success(first.id, _youtube_info(first_path), "reivi")
+
+    second = await make_download(session, url="https://www.youtube.com/watch?v=dupvid1")
+    again = tmp_path / "MrDeriv" / "Some Video.mp4"
+    _write(again)
+    _write(again.with_suffix(".info.json"), b"{}")
+    await Downloader()._on_success(second.id, _youtube_info(again), "reivi")
+
+    await session.refresh(second)
+    assert second.status == "done"
+    rows = (await session.execute(select(MediaItem).where(MediaItem.video_id == "dupvid1"))).scalars().all()
+    assert len(rows) == 1
+    assert (tmp_path / rows[0].local_path).exists()
+    assert not again.exists()
+    assert not again.with_suffix(".info.json").exists()
+
+
+async def test_same_video_for_another_owner_is_not_a_duplicate(session, make_download, tmp_path, monkeypatch):
+    from db import MediaItem
+    from sqlalchemy import select
+
+    monkeypatch.setattr(downloader_module, "MEDIA_ROOT", str(tmp_path))
+    a = await make_download(session, url="https://www.youtube.com/watch?v=dupvid1", owner="reivi")
+    path_a = tmp_path / "A" / "Some Video.mp4"
+    _write(path_a)
+    await Downloader()._on_success(a.id, _youtube_info(path_a), "reivi")
+
+    b = await make_download(session, url="https://www.youtube.com/watch?v=dupvid1", owner="pittinic")
+    path_b = tmp_path / "B" / "Some Video.mp4"
+    _write(path_b)
+    await Downloader()._on_success(b.id, _youtube_info(path_b), "pittinic")
+
+    rows = (await session.execute(select(MediaItem).where(MediaItem.video_id == "dupvid1"))).scalars().all()
+    assert sorted(r.owner for r in rows) == ["pittinic", "reivi"]
