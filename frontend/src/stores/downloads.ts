@@ -27,6 +27,7 @@ export interface Download {
   vcodec: string | null
   acodec: string | null
   abr: number | null
+  media_id?: number | null
 }
 
 export const useDownloadsStore = defineStore('downloads', () => {

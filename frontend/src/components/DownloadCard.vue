@@ -3,8 +3,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Download } from '../stores/downloads'
 import { formatAudio, formatResolution } from '../utils/mediaProfile'
 import { timingLine } from '../utils/downloadTiming'
+import JellyfinLink from './JellyfinLink.vue'
 
-const props = defineProps<{ download: Download; showOwner?: boolean }>()
+const props = defineProps<{ download: Download; showOwner?: boolean; jellyfin?: boolean }>()
 defineEmits<{ delete: [] }>()
 
 const showCompleted = ref(false)
@@ -88,6 +89,7 @@ function formatTime(iso: string): string {
           {{ download.url }}
         </p>
         <p v-if="timing" class="text-xs text-gray-500 mt-0.5">{{ timing }}</p>
+        <JellyfinLink v-if="jellyfin && download.media_id" class="mt-1" :media-id="download.media_id" />
         <p v-if="download.error" class="text-xs text-red-400 mt-1">{{ download.error }}</p>
         <p v-if="download.status === 'error'" class="text-xs mt-0.5">
           <span v-if="download.retry_at" class="text-gray-500">

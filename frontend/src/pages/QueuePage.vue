@@ -179,6 +179,7 @@ onUnmounted(() => {
         :key="dl.id"
         :download="dl"
         :show-owner="settings.isAdmin"
+        :jellyfin="settings.jellyfinEnabled"
         @delete="store.remove(dl.id)"
       />
     </div>

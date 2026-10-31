@@ -2,32 +2,10 @@
 import type { MediaItem } from '../stores/media'
 import { formatAudio, formatResolution } from '../utils/mediaProfile'
 
-import { ref } from 'vue'
-import { api } from '../api/client'
+import JellyfinLink from './JellyfinLink.vue'
 
-const props = defineProps<{ item: MediaItem; showOwner?: boolean; jellyfin?: boolean }>()
+defineProps<{ item: MediaItem; showOwner?: boolean; jellyfin?: boolean }>()
 defineEmits<{ delete: [] }>()
-
-const jellyfinState = ref<'idle' | 'loading' | 'missing'>('idle')
-
-async function openInJellyfin() {
-  // Opened synchronously: a window opened after the await is treated as an unrequested popup.
-  const tab = window.open('', '_blank')
-  jellyfinState.value = 'loading'
-  try {
-    const { url } = await api.get<{ url: string | null }>(`/api/media/${props.item.id}/jellyfin`)
-    if (url && tab) {
-      tab.location.href = url
-      jellyfinState.value = 'idle'
-    } else {
-      tab?.close()
-      jellyfinState.value = 'missing'
-    }
-  } catch {
-    tab?.close()
-    jellyfinState.value = 'missing'
-  }
-}
 
 function formatDuration(s: number | null): string {
   if (!s) return ''
@@ -94,14 +72,7 @@ function formatDuration(s: number | null): string {
           {{ formatAudio(item) }}
         </span>
       </div>
-      <button
-        v-if="jellyfin"
-        class="mt-2 text-xs text-sky-400 hover:text-sky-300 disabled:opacity-50"
-        :disabled="jellyfinState === 'loading'"
-        @click="openInJellyfin"
-      >
-        {{ jellyfinState === 'missing' ? 'Not in Jellyfin yet — scan requested, try again shortly' : 'Open in Jellyfin ↗' }}
-      </button>
+      <JellyfinLink v-if="jellyfin" class="mt-2" :media-id="item.id" />
     </div>
   </div>
 </template>

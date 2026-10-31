@@ -301,6 +301,8 @@ Library card shows "Open in Jellyfin" when `/api/settings/me` reports `jellyfin_
 by path, so the lookup is a title search whose hits are matched on `Path` against
 `JELLYFIN_MEDIA_ROOT/<local_path>`. Nothing is cached (a moved file gets a new Jellyfin id).
 A miss returns `url: null` and asks Jellyfin to scan that path (`POST /Library/Media/Updated`).
+The Queue's finished cards show the same button (`JellyfinLink.vue`) via `media_id` on
+`GET /api/downloads`, set only when the download produced exactly one item.
 
 ### Cookies upload (`api/settings.py`)
 

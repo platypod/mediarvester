@@ -47,6 +47,9 @@ class DownloadRead(BaseModel):
     vcodec: str | None
     acodec: str | None
     abr: float | None
+    # The library item this download produced, when it produced exactly one
+    # (a playlist or channel download yields many, so there is nothing to link).
+    media_id: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -127,8 +130,22 @@ async def list_downloads(
         q = q.where(Download.owner == owner)
     if status:
         q = q.where(Download.status.in_(status.split(",")))
-    result = await session.execute(q)
-    return result.scalars().all()
+    rows = (await session.execute(q)).scalars().all()
+    done_ids = [r.id for r in rows if r.status == "done"]
+    by_download: dict[int, list[int]] = {}
+    if done_ids:
+        for download_id, media_id in (
+            await session.execute(
+                select(MediaItem.download_id, MediaItem.id).where(MediaItem.download_id.in_(done_ids))
+            )
+        ).all():
+            by_download.setdefault(download_id, []).append(media_id)
+    return [
+        DownloadRead.model_validate(r).model_copy(
+            update={"media_id": by_download[r.id][0] if len(by_download.get(r.id, [])) == 1 else None}
+        )
+        for r in rows
+    ]
 
 
 @router.delete("/{download_id}", status_code=204)
