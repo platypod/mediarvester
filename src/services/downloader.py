@@ -732,7 +732,16 @@ class Downloader:
             # on top when present, which is what age-restricted/members-only
             # content needs -- mweb doesn't remove that requirement, it just
             # means most public videos no longer depend on cookie freshness.
-            "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+            #
+            # 2026-11-17: mweb's stream URLs started returning 403 on the first
+            # data request for some videos (HmGlTkbMhII, OSanF9CARYA), 5/5 failures
+            # in a row, independent of yt-dlp (2026.10.26 and nightly) and
+            # bgutil (1.3.2 and 2.0.2) versions or cookie freshness. tv_embedded
+            # downloaded 10/10 with the same cookies/PO Token setup and exposes
+            # the same formats up to 1080p. Do NOT list several clients: yt-dlp
+            # merges them and format selection then fails ("Requested format is
+            # not available", 6/6) -- a fallback would need a per-attempt switch.
+            "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
             # Never fall back to a pre-muxed file on YouTube -- see _format_for.
             # (2026-08-20 incident: this used to be forced to the 360p
             # progressive stream as a stopgap for the GVS PO Token 403s; fixed
