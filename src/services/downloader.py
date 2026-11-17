@@ -131,6 +131,9 @@ def is_probably_collection_url(url: str) -> bool:
 # out and let the item fail loudly, into the existing auto-retry schedule.
 # Other platforms (X, Instagram, ...) routinely serve only a muxed file, so
 # they keep the fallback.
+# yt-dlp innertube client used for every YouTube download (rationale at its use site).
+YOUTUBE_PLAYER_CLIENT = "web_embedded"
+
 _FORMAT_DEFAULT = "bv*+ba/b"
 _FORMAT_ADAPTIVE_ONLY = "bv*+ba"
 _YOUTUBE_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
@@ -736,12 +739,15 @@ class Downloader:
             # 2026-11-17: mweb's stream URLs started returning 403 on the first
             # data request for some videos (HmGlTkbMhII, OSanF9CARYA), 5/5 failures
             # in a row, independent of yt-dlp (2026.10.26 and nightly) and
-            # bgutil (1.3.2 and 2.0.2) versions or cookie freshness. tv_embedded
-            # downloaded 10/10 with the same cookies/PO Token setup and exposes
-            # the same formats up to 1080p. Do NOT list several clients: yt-dlp
+            # bgutil (1.3.2 and 2.0.2) versions or cookie freshness. web_embedded
+            # downloaded 5/5 with the same cookies/PO Token setup and exposes the
+            # same formats up to 1080p. Do NOT list several clients: yt-dlp
             # merges them and format selection then fails ("Requested format is
             # not available", 6/6) -- a fallback would need a per-attempt switch.
-            "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
+            # The name must be one yt-dlp knows: an unknown one ("tv_embedded",
+            # v1.15.4) is skipped with a warning and yt-dlp silently uses its
+            # default clients instead -- see tests/test_player_client.py.
+            "extractor_args": {"youtube": {"player_client": [YOUTUBE_PLAYER_CLIENT]}},
             # Never fall back to a pre-muxed file on YouTube -- see _format_for.
             # (2026-08-20 incident: this used to be forced to the 360p
             # progressive stream as a stopgap for the GVS PO Token 403s; fixed
