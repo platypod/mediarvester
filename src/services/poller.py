@@ -20,6 +20,7 @@ from services.downloader import (
 )
 from services.service_status import compute_service_status
 from services.telemetry import create_cached_gauge, meter, propagate_context, tracer
+from services.ytdlp_options import youtube_opts
 
 logger = logging.getLogger(__name__)
 
@@ -174,15 +175,10 @@ async def _label_source(source: Source) -> None:
         source.platform = info.get("extractor")
 
 
-# YouTube's auto-selected clients (e.g. android_vr) increasingly serve
-# SABR-only streams or trip rate limits more readily than mweb does --
-# see services/downloader.py's _build_opts for the full story and the
-# 2026-08-19 incident that verified this empirically for downloads. Applied
-# here too since discovery scans hit the same extractor.
-_YOUTUBE_OPTS = {
-    "js_runtimes": {"node": {}},
-    "extractor_args": {"youtube": {"player_client": ["mweb"]}},
-}
+# Discovery scans hit the same extractor as downloads, so they share the
+# same options -- and the same decision not to pin a player client (see
+# services/ytdlp_options.py).
+_YOUTUBE_OPTS = youtube_opts()
 
 
 def _extract_flat(url: str, cookies: str | None) -> dict:

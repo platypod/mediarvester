@@ -21,6 +21,7 @@ from db import Download, MediaItem, async_session
 from services import library_layout, playlists
 from services.episode_naming import resolve_episode
 from services.telemetry import meter, propagate_context, tracer
+from services.ytdlp_options import youtube_opts
 
 logger = getLogger(__name__)
 
@@ -131,9 +132,6 @@ def is_probably_collection_url(url: str) -> bool:
 # out and let the item fail loudly, into the existing auto-retry schedule.
 # Other platforms (X, Instagram, ...) routinely serve only a muxed file, so
 # they keep the fallback.
-# yt-dlp innertube client used for every YouTube download (rationale at its use site).
-YOUTUBE_PLAYER_CLIENT = "web_embedded"
-
 _FORMAT_DEFAULT = "bv*+ba/b"
 _FORMAT_ADAPTIVE_ONLY = "bv*+ba"
 _YOUTUBE_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
@@ -239,8 +237,7 @@ def _flat_extract_info(url: str, owner: str) -> dict:
     `matching_known_playlist` (a single video's own id/uploader, to check it
     against a known playlist's membership)."""
     opts = {
-        "js_runtimes": {"node": {}},
-        "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+        **youtube_opts(),
         "extract_flat": True,
         "ignoreerrors": True,
         "quiet": True,
@@ -721,33 +718,9 @@ class Downloader:
             folder_hint.replace("%", "%%").replace("/", "-") if folder_hint else "%(playlist_title,playlist|)s"
         )
         opts: dict = {
-            # Use Node.js for YouTube's n-challenge (requires yt-dlp-ejs + Node 22+).
-            # yt-dlp defaults to deno-only; node must be explicitly enabled.
-            "js_runtimes": {"node": {}},
-            # YouTube's "web"/default clients (and the ones yt-dlp auto-selects,
-            # e.g. android_vr) increasingly serve SABR-only streams with no
-            # direct HTTPS format URL yt-dlp can download -- see
-            # https://github.com/yt-dlp/yt-dlp/issues/12482. mweb is the
-            # maintainer-recommended client that still exposes real HTTPS
-            # formats when paired with a PO Token (bgutil-ytdlp-pot-provider
-            # sidecar); verified empirically 2026-08-19 to complete a full
-            # download with zero cookies. cookiefile below still gets applied
-            # on top when present, which is what age-restricted/members-only
-            # content needs -- mweb doesn't remove that requirement, it just
-            # means most public videos no longer depend on cookie freshness.
-            #
-            # 2026-11-17: mweb's stream URLs started returning 403 on the first
-            # data request for some videos (HmGlTkbMhII, OSanF9CARYA), 5/5 failures
-            # in a row, independent of yt-dlp (2026.10.26 and nightly) and
-            # bgutil (1.3.2 and 2.0.2) versions or cookie freshness. web_embedded
-            # downloaded 5/5 with the same cookies/PO Token setup and exposes the
-            # same formats up to 1080p. Do NOT list several clients: yt-dlp
-            # merges them and format selection then fails ("Requested format is
-            # not available", 6/6) -- a fallback would need a per-attempt switch.
-            # The name must be one yt-dlp knows: an unknown one ("tv_embedded",
-            # v1.15.4) is skipped with a warning and yt-dlp silently uses its
-            # default clients instead -- see tests/test_player_client.py.
-            "extractor_args": {"youtube": {"player_client": [YOUTUBE_PLAYER_CLIENT]}},
+            # JS runtime only -- no player_client pin. yt-dlp's own default
+            # client set is the one to trust; see services/ytdlp_options.py.
+            **youtube_opts(),
             # Never fall back to a pre-muxed file on YouTube -- see _format_for.
             # (2026-08-20 incident: this used to be forced to the 360p
             # progressive stream as a stopgap for the GVS PO Token 403s; fixed
@@ -1328,7 +1301,7 @@ def warm_up_yt_dlp_plugins() -> None:
     concurrent can start.
     """
     try:
-        yt_dlp.YoutubeDL({"quiet": True, "js_runtimes": {"node": {}}}).close()
+        yt_dlp.YoutubeDL({"quiet": True, **youtube_opts()}).close()
     except Exception as exc:
         logger.warning("could not warm up yt-dlp's plugin registry: %s", exc)
 

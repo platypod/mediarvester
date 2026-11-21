@@ -1,13 +1,54 @@
-"""The pinned YouTube player_client must be a client yt-dlp actually knows.
+"""No YouTube player_client may be pinned by default.
 
-yt-dlp skips an unknown name with only a warning and silently falls back to its
-default clients, so a typo (v1.15.4 shipped "tv_embedded") goes unnoticed.
+Every pin this project shipped (mweb, "tv_embedded", web_embedded) broke within
+weeks while yt-dlp's own default client set kept working -- see
+services/ytdlp_options.py. These guard every call site that builds options.
 """
 
-from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
+from services import poller
+from services.downloader import Downloader, _flat_extract_info
+from services.ytdlp_options import youtube_opts
 
-from services.downloader import YOUTUBE_PLAYER_CLIENT
+
+def _pinned(opts: dict) -> bool:
+    return bool(opts.get("extractor_args", {}).get("youtube", {}).get("player_client"))
 
 
-def test_pinned_player_client_is_known_to_yt_dlp():
-    assert YOUTUBE_PLAYER_CLIENT in INNERTUBE_CLIENTS
+def test_base_options_pin_no_client():
+    assert not _pinned(youtube_opts())
+    assert youtube_opts()["js_runtimes"] == {"node": {}}
+
+
+def test_explicit_override_is_passed_through():
+    assert youtube_opts(["tv_samsung"])["extractor_args"] == {"youtube": {"player_client": ["tv_samsung"]}}
+
+
+def test_download_options_pin_no_client():
+    opts = Downloader()._build_opts(1, "someone", url="https://www.youtube.com/watch?v=abc")
+    assert not _pinned(opts)
+    assert opts["js_runtimes"] == {"node": {}}
+
+
+def test_poller_options_pin_no_client():
+    assert not _pinned(poller._YOUTUBE_OPTS)
+
+
+def test_flat_lookup_pins_no_client(monkeypatch):
+    seen = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            seen.update(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {}
+
+    monkeypatch.setattr("services.downloader.yt_dlp.YoutubeDL", FakeYDL)
+    _flat_extract_info("https://www.youtube.com/watch?v=abc", "someone")
+    assert seen and not _pinned(seen)
