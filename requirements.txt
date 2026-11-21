@@ -5,8 +5,14 @@ sqlalchemy[asyncio]>=2.0.0,<2.1
 aiosqlite>=0.20.0
 asyncpg>=0.29.0
 apscheduler>=3.10.0
-yt-dlp>=2026.7.4
-yt-dlp-ejs
+# Pinned exactly, and bumped by .github/workflows/ytdlp-update.yml (daily:
+# new stable release -> tests -> patch tag -> image). YouTube breaks yt-dlp
+# every few days and the fix ships in yt-dlp, not here, so a stale yt-dlp is
+# the main way downloads fail -- but an unpinned floor meant prod only ever
+# got whatever was newest the day a mediarvester tag happened to be built.
+# yt-dlp-ejs (YouTube's JS challenge solver) is bumped alongside it.
+yt-dlp==2026.10.26
+yt-dlp-ejs==0.8.0
 # PO Token provider plugin -- retrieves tokens from the bgutil-ytdlp-pot-provider
 # sidecar (http://127.0.0.1:4416 by default, no config needed) to satisfy
 # YouTube's proof-of-origin requirement for actual video-data downloads. Without

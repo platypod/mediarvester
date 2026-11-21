@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - '*'
+  # Called by ytdlp-update.yml after it pushes a tag: a tag pushed with
+  # GITHUB_TOKEN does not trigger the push event above (GitHub's guard
+  # against workflow loops), so that workflow invokes this one directly.
+  workflow_call:
+    inputs:
+      version:
+        description: Tag to build (e.g. v1.15.7)
+        required: true
+        type: string
 
 jobs:
   test:
@@ -20,6 +29,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The tag itself when called from ytdlp-update.yml; empty (the
+          # pushed ref) otherwise.
+          ref: ${{ inputs.version }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -37,7 +50,7 @@ jobs:
       - name: Extract tag
         id: tag
         run: |
-          version="${GITHUB_REF_NAME}"
+          version="${{ inputs.version || github.ref_name }}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           # Only move :latest for a clean release (no "-" prerelease suffix,
           # e.g. a "-dev" tag) -- otherwise a prerelease build pushed to feed

@@ -1,0 +1,81 @@
+name: Bump yt-dlp
+
+# YouTube breaks yt-dlp every few days and the fix ships in yt-dlp itself, so
+# prod must not wait for the next mediarvester feature release to get it.
+# Daily: if yt-dlp (or yt-dlp-ejs) has a new stable release, bump the exact
+# pin in requirements.txt, run the tests, commit, cut the next patch tag and
+# build the image. Flux then stages it on stack `dev` like any release;
+# promoting it to prod stays a manual `dev` -> `main` merge.
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Check and test only -- no commit, tag or build
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: ytdlp-update
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bump pins to the latest PyPI release
+        id: bump
+        run: python scripts/bump_ytdlp.py requirements.txt | tee -a "$GITHUB_OUTPUT"
+
+      - name: Install ffmpeg
+        if: steps.bump.outputs.changed == 'true'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Run tests against the bumped pins
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          pip install -r requirements-dev.txt
+          pytest
+
+      - name: Commit, tag and push
+        id: release
+        if: steps.bump.outputs.changed == 'true' && !inputs.dry_run
+        env:
+          SUMMARY: ${{ steps.bump.outputs.summary }}
+        run: |
+          latest=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          IFS=. read -r major minor patch <<< "${latest#v}"
+          version="v${major}.${minor}.$((patch + 1))"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(deps): bump ${SUMMARY}"
+          git tag -a "$version" -m "${version}: ${SUMMARY}"
+          git push origin main "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Released $version (${SUMMARY})" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: bump
+    if: needs.bump.outputs.version != ''
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.bump.outputs.version }}
+    secrets: inherit
