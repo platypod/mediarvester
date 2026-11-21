@@ -16,7 +16,10 @@ within weeks while the defaults kept working:
   formats on others (smspqpgDKQo). The defaults downloaded both, with and
   without cookies, in the prod pod on 2026-11-21.
 
-Keeping yt-dlp itself current is what keeps the defaults right.
+Keeping yt-dlp itself current is what keeps the defaults right
+(.github/workflows/ytdlp-update.yml). The only client override is a
+per-attempt one on a retry that already failed with the defaults -- see
+services/retry_strategy.py.
 """
 
 # Use Node.js for YouTube's n-challenge (requires yt-dlp-ejs + Node 22+).

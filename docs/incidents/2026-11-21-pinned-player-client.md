@@ -47,8 +47,11 @@ cookies.
   `services/ytdlp_options.py`. `tests/test_player_client.py` fails if a pin
   comes back.
 
-## Follow-ups
+## Follow-ups (done)
 
-- Keep yt-dlp current automatically instead of only at mediarvester releases.
-- A canary + cookie health check, so a YouTube change shows up as a signal.
-- Retries that classify the error and change strategy per attempt.
+- yt-dlp pinned exactly and bumped daily by `.github/workflows/ytdlp-update.yml`
+  (tests → patch tag → image; promotion stays manual).
+- `services/canary.py` probes a known-good video through the real download
+  options and reports per cookies owner whether the file is (still) a login.
+- `services/retry_strategy.py`: retries classify the error and change
+  strategy (skip / drop web_embedded / other client sets / wait).

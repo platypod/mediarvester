@@ -77,7 +77,7 @@ async def test_at_cap_schedules_nothing_and_gives_up(dl, monkeypatch, caplog):
 async def test_schedules_one_retry_per_failed_entry(dl, monkeypatch):
     scheduled = []
 
-    async def fake_retry_after_delay(url, owner, source_id, retry_count, delay, title=None):
+    async def fake_retry_after_delay(url, owner, source_id, retry_count, delay, title=None, **kw):
         scheduled.append((url, owner, source_id, retry_count, delay, title))
 
     monkeypatch.setattr(dl, "_retry_after_delay", fake_retry_after_delay)
@@ -113,7 +113,7 @@ async def test_entries_with_no_url_are_skipped(dl, monkeypatch):
 async def test_falls_back_to_plain_url_field_when_no_webpage_url(dl, monkeypatch):
     scheduled = []
 
-    async def fake_retry_after_delay(url, owner, source_id, retry_count, delay, title=None):
+    async def fake_retry_after_delay(url, owner, source_id, retry_count, delay, title=None, **kw):
         scheduled.append(url)
 
     monkeypatch.setattr(dl, "_retry_after_delay", fake_retry_after_delay)

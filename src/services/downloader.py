@@ -21,6 +21,7 @@ from db import Download, MediaItem, async_session
 from services import library_layout, playlists
 from services.episode_naming import resolve_episode
 from services.telemetry import meter, propagate_context, tracer
+from services import retry_strategy
 from services.ytdlp_options import youtube_opts
 
 logger = getLogger(__name__)
@@ -48,6 +49,10 @@ _download_duration = meter.create_histogram(
 )
 _download_retries = meter.create_counter(
     "mediarvester.download.retry", description="Auto-retries scheduled after a failed item"
+)
+_download_retries_skipped = meter.create_counter(
+    "mediarvester.download.retry_skipped",
+    description="Failed items not auto-retried because their error kind never clears on its own",
 )
 _downloads_active = meter.create_up_down_counter(
     "mediarvester.download.active", description="Downloads currently running (bounded by DOWNLOAD_CONCURRENCY)"
@@ -571,13 +576,25 @@ class Downloader:
         owner: str = "anonymous",
         force: bool = False,
         folder_hint: str | None = None,
+        player_client: list[str] | None = None,
     ) -> None:
-        self._executor.submit(propagate_context(self._run), download_id, url, owner, force, folder_hint)
+        self._executor.submit(
+            propagate_context(self._run), download_id, url, owner, force, folder_hint, player_client
+        )
 
     def _run(
-        self, download_id: int, url: str, owner: str, force: bool = False, folder_hint: str | None = None
+        self,
+        download_id: int,
+        url: str,
+        owner: str,
+        force: bool = False,
+        folder_hint: str | None = None,
+        player_client: list[str] | None = None,
     ) -> None:
-        logger.info("download %d starting: %s", download_id, url)
+        if player_client:
+            logger.info("download %d starting: %s (player_client=%s)", download_id, url, ",".join(player_client))
+        else:
+            logger.info("download %d starting: %s", download_id, url)
 
         is_collection = is_probably_collection_url(url)
         started_at = time.monotonic()
@@ -654,7 +671,8 @@ class Downloader:
 
                 log_adapter = _YtDlpLogAdapter(download_id)
                 opts = self._build_opts(
-                    download_id, owner, force, playlist_items, folder_hint, log_adapter, url=url
+                    download_id, owner, force, playlist_items, folder_hint, log_adapter, url=url,
+                    player_client=player_client,
                 )
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
@@ -705,6 +723,7 @@ class Downloader:
         folder_hint: str | None = None,
         log_adapter: "_YtDlpLogAdapter | None" = None,
         url: str = "",
+        player_client: list[str] | None = None,
     ) -> dict:
         # A folder_hint (set by the poller when a newly-discovered video
         # matches an already-downloaded playlist -- see poller.py) replaces
@@ -720,7 +739,9 @@ class Downloader:
         opts: dict = {
             # JS runtime only -- no player_client pin. yt-dlp's own default
             # client set is the one to trust; see services/ytdlp_options.py.
-            **youtube_opts(),
+            # `player_client` is only ever set on a retry, by
+            # services/retry_strategy.py, after the defaults already failed.
+            **youtube_opts(player_client),
             # Never fall back to a pre-muxed file on YouTube -- see _format_for.
             # (2026-08-20 incident: this used to be forced to the 360p
             # progressive stream as a stopgap for the GVS PO Token 403s; fixed
@@ -1143,22 +1164,33 @@ class Downloader:
                 # mid-transfer) -- worth keeping for the retry row below
                 # rather than always falling back to a bare URL.
                 title = dl.title or dl.current_title
+                retry_plan = retry_strategy.plan(error, dl.retry_count + 1)
                 dl.status = "error"
                 dl.error = error
                 dl.finished_at = datetime.utcnow()
                 dl.current_title = None
-                dl.retry_at = self._compute_retry_at(dl.retry_count)
+                dl.retry_at = self._compute_retry_at(dl.retry_count) if retry_plan.retry else None
                 await session.commit()
                 logger.error(
-                    "download %d recorded as error -- %r (creator=%s, platform=%s, owner=%s, url=%s): %s",
-                    download_id, title or "(untitled)", dl.creator, dl.platform, dl.owner, dl.url, error,
+                    "download %d recorded as error [%s] -- %r (creator=%s, platform=%s, owner=%s, url=%s): %s",
+                    download_id, retry_plan.kind.value, title or "(untitled)", dl.creator, dl.platform,
+                    dl.owner, dl.url, error,
                 )
+                if not retry_plan.retry:
+                    logger.warning(
+                        "download %d: not auto-retrying -- %s errors don't clear on their own",
+                        download_id, retry_plan.kind.value,
+                    )
+                    _download_retries_skipped.add(1, {"kind": retry_plan.kind.value})
+                    return
                 self._schedule_retries(
                     download_id,
                     [{"webpage_url": dl.url, "title": title}],
                     dl.owner,
                     dl.source_id,
                     dl.retry_count,
+                    player_client=retry_plan.player_client,
+                    kind=retry_plan.kind.value,
                 )
 
     def _compute_retry_at(self, current_retry_count: int) -> datetime | None:
@@ -1177,6 +1209,8 @@ class Downloader:
         owner: str,
         source_id: int | None,
         current_retry_count: int,
+        player_client: list[str] | None = None,
+        kind: str = "other",
     ) -> None:
         """Requeue every entry that didn't produce a file, after a delay --
         long enough that a transient site-side issue (rate limiting, a PO
@@ -1200,14 +1234,23 @@ class Downloader:
             if not retry_url:
                 continue
             logger.info(
-                "download %d: will retry %r in %ds (attempt %d/%d)",
+                "download %d: will retry %r in %ds (attempt %d/%d, %s)",
                 download_id, entry.get("title") or retry_url, delay,
                 current_retry_count + 1, _MAX_AUTO_RETRIES,
+                f"player_client={','.join(player_client)}" if player_client else "yt-dlp defaults",
             )
-            _download_retries.add(1, {"attempt": str(current_retry_count + 1)})
+            _download_retries.add(
+                1,
+                {
+                    "attempt": str(current_retry_count + 1),
+                    "kind": kind,
+                    "client_override": "yes" if player_client else "no",
+                },
+            )
             asyncio.create_task(
                 self._retry_after_delay(
-                    retry_url, owner, source_id, current_retry_count + 1, delay, entry.get("title")
+                    retry_url, owner, source_id, current_retry_count + 1, delay, entry.get("title"),
+                    player_client=player_client,
                 )
             )
 
@@ -1219,6 +1262,7 @@ class Downloader:
         retry_count: int,
         delay: float,
         title: str | None = None,
+        player_client: list[str] | None = None,
     ) -> None:
         await asyncio.sleep(delay)
         async with async_session() as session:
@@ -1231,14 +1275,17 @@ class Downloader:
             # Carrying the already-known title over means a retry row shows
             # something better than a bare URL immediately, rather than
             # waiting on this attempt to also succeed before it has one.
-            dl = Download(url=url, owner=owner, source_id=source_id, retry_count=retry_count, title=title)
+            dl = Download(
+                url=url, owner=owner, source_id=source_id, retry_count=retry_count, title=title,
+                player_client=retry_strategy.encode(player_client),
+            )
             session.add(dl)
             await session.commit()
             await session.refresh(dl)
             await supersede_error_rows(session, url, owner, dl.id)
             await session.commit()
         logger.info("download %d: auto-retry attempt %d for %s", dl.id, retry_count, url)
-        self.enqueue(dl.id, url, owner)
+        self.enqueue(dl.id, url, owner, player_client=player_client)
 
 
 downloader = Downloader()
@@ -1334,10 +1381,13 @@ async def recover_interrupted() -> None:
             dl.current_title = None
             dl.completed_items = None
         await session.commit()
-        rows = [(dl.id, dl.url, dl.owner, dl.folder_hint) for dl in stuck]
+        rows = [(dl.id, dl.url, dl.owner, dl.folder_hint, dl.player_client) for dl in stuck]
 
-    for download_id, url, owner, folder_hint in rows:
-        downloader.enqueue(download_id, url, owner, force=True, folder_hint=folder_hint)
+    for download_id, url, owner, folder_hint, player_client in rows:
+        downloader.enqueue(
+            download_id, url, owner, force=True, folder_hint=folder_hint,
+            player_client=retry_strategy.decode(player_client),
+        )
         logger.info("recovered interrupted download %d: %s", download_id, url)
 
     if rows:
@@ -1386,21 +1436,32 @@ async def recover_missed_retries() -> None:
                 )
             ).scalar_one()
             if latest_id == dl.id:
-                rows.append((dl.id, dl.url, dl.owner, dl.source_id, dl.retry_count, dl.title))
+                rows.append((dl.id, dl.url, dl.owner, dl.source_id, dl.retry_count, dl.title, dl.error))
 
-    for download_id, url, owner, source_id, retry_count, title in rows:
+    for download_id, url, owner, source_id, retry_count, title, error in rows:
+        # Same plan the lost in-process timer would have carried out.
+        retry_plan = retry_strategy.plan(error, retry_count + 1)
+        if not retry_plan.retry:
+            logger.warning(
+                "download %d: missed auto-retry for %s dropped -- %s errors don't clear on their own",
+                download_id, url, retry_plan.kind.value,
+            )
+            continue
         logger.warning(
             "download %d: a scheduled auto-retry for %s never fired (likely a restart mid-wait) -- firing it now",
             download_id, url,
         )
         async with async_session() as session:
-            retry_dl = Download(url=url, owner=owner, source_id=source_id, retry_count=retry_count + 1, title=title)
+            retry_dl = Download(
+                url=url, owner=owner, source_id=source_id, retry_count=retry_count + 1, title=title,
+                player_client=retry_strategy.encode(retry_plan.player_client),
+            )
             session.add(retry_dl)
             await session.commit()
             await session.refresh(retry_dl)
             await supersede_error_rows(session, url, owner, retry_dl.id)
             await session.commit()
-        downloader.enqueue(retry_dl.id, url, owner)
+        downloader.enqueue(retry_dl.id, url, owner, player_client=retry_plan.player_client)
 
     if rows:
         logger.info("recovered %d missed auto-retry(ies) after restart", len(rows))

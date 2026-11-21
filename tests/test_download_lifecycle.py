@@ -311,7 +311,7 @@ async def test_on_error_carries_over_a_known_title_to_the_retry_entry(session, m
     downloader = Downloader()
     captured = {}
 
-    def fake_schedule_retries(download_id, failed_entries, owner, source_id, retry_count):
+    def fake_schedule_retries(download_id, failed_entries, owner, source_id, retry_count, **kw):
         captured["failed_entries"] = failed_entries
 
     monkeypatch.setattr(downloader, "_schedule_retries", fake_schedule_retries)

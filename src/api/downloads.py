@@ -42,6 +42,8 @@ class DownloadRead(BaseModel):
     completed_items: list[str] | None
     retry_count: int
     retry_at: datetime | None
+    # yt-dlp player_client override for this attempt (auto-retries only).
+    player_client: str | None = None
     width: int | None
     height: int | None
     vcodec: str | None

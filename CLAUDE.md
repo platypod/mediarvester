@@ -308,7 +308,7 @@ The Queue's finished cards show the same button (`JellyfinLink.vue`) via `media_
 
 - `POST /api/settings/cookies` — accepts a multipart file upload, writes to
   `{COOKIES_ROOT}/{owner}.txt`.
-- `GET /api/settings/cookies` — returns `{ has_cookies, uploaded_at }` for the current user.
+- `GET /api/settings/cookies` — returns `{ has_cookies, uploaded_at, logged_in, last_check }` for the current user (see "YouTube health" below).
 - `GET /api/settings/me` — returns `{ user }` so the frontend can display who is logged in.
 
 ### YouTube health (`services/ytdlp_options.py`, `ytdlp_errors.py`, `canary.py`, `cookies_health.py`)
@@ -322,6 +322,10 @@ The Queue's finished cards show the same button (`JellyfinLink.vue`) via `media_
   use, stopping after the first couple of MB. A failing anonymous probe marks the service
   degraded on its own (banner + `mediarvester.service.degraded`), and sets
   `mediarvester.canary.healthy` / `mediarvester.canary.cookies_healthy`.
+- Auto-retries follow `services/retry_strategy.py`: no retry for permanent/auth-required
+  errors; embed-blocked → `default,-web_embedded`; 403/formats-missing → a short ladder of other
+  client sets (persisted on the retry row as `Download.player_client`), then the defaults again.
+  First attempts always use yt-dlp's defaults.
 - `GET /api/settings/cookies` reports `logged_in` (same test as yt-dlp: `LOGIN_INFO` + a
   SAPISID cookie) and the owner's latest canary check, including rotation during it. yt-dlp
   rewrites the cookies file after each run, so `logged_in` can change without an upload.

@@ -68,6 +68,12 @@ class Download(Base):
     # Persisted (not just passed at enqueue time) so a restart's
     # recover_interrupted can honour it on re-enqueue too.
     folder_hint: Mapped[str | None]
+    # Comma-separated yt-dlp player_client override for this attempt, set
+    # only on an auto-retry row whose previous attempt failed in a way that
+    # another client set may get past (services/retry_strategy.py). None =
+    # yt-dlp's own defaults, which every first attempt uses. Persisted so a
+    # restart's recovery paths re-run the attempt with the same plan.
+    player_client: Mapped[str | None]
     # Video/audio profile, populated as soon as yt-dlp's progress hook sees
     # each selected format (before the file finishes) -- not just on success,
     # unlike MediaItem's copy of these same fields, so the Queue view can
@@ -229,6 +235,13 @@ async def create_all() -> None:
     except (OperationalError, ProgrammingError):
         async with engine.begin() as conn:
             await conn.execute(text("ALTER TABLE download ADD COLUMN folder_hint TEXT"))
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT player_client FROM download LIMIT 1"))
+    except (OperationalError, ProgrammingError):
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE download ADD COLUMN player_client TEXT"))
 
     try:
         async with engine.begin() as conn:
