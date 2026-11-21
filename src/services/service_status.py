@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import Download
+from services import canary
 
 # Substrings seen in yt-dlp errors that reflect a transient, site-side
 # problem (rate limiting, a PO Token / bot-check hiccup, a format temporarily
@@ -46,11 +47,27 @@ async def compute_service_status(session: AsyncSession) -> dict:
         .order_by(Download.created_at.asc())
     )
     matches = [row for row in result.all() if TRANSIENT_ERROR_PATTERNS.search(row.error)]
+    probe = _canary_summary()
 
-    if len(matches) < DEGRADED_THRESHOLD:
-        return {"degraded": False, "detected_since": None, "recent_failures": len(matches)}
+    db_degraded = len(matches) >= DEGRADED_THRESHOLD
+    # A failing anonymous canary is a site-wide signal on its own: it probes
+    # a known-good video with the same options real downloads use, so it
+    # needs no threshold -- and it fires before any user download fails.
+    canary_degraded = probe["ok"] is False
+    if not (db_degraded or canary_degraded):
+        return {"degraded": False, "detected_since": None, "recent_failures": len(matches), "canary": probe}
     return {
         "degraded": True,
-        "detected_since": matches[0].created_at,
+        "detected_since": matches[0].created_at if db_degraded else probe["checked_at"],
         "recent_failures": len(matches),
+        "canary": probe,
     }
+
+
+def _canary_summary() -> dict:
+    """Latest anonymous canary probe: ok is None until the first run."""
+    result = canary.latest(canary.ANONYMOUS)
+    if result is None:
+        return {"ok": None, "checked_at": None, "kind": None}
+    failed = next((p for p in result.probes if not p.ok), None)
+    return {"ok": result.ok, "checked_at": result.checked_at, "kind": failed.kind if failed else None}

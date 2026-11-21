@@ -23,7 +23,12 @@ async def _make_error(session, make_download, *, error: str, age: timedelta = ti
 
 async def test_no_failures_is_not_degraded(session):
     status = await compute_service_status(session)
-    assert status == {"degraded": False, "detected_since": None, "recent_failures": 0}
+    assert status == {
+        "degraded": False,
+        "detected_since": None,
+        "recent_failures": 0,
+        "canary": {"ok": None, "checked_at": None, "kind": None},
+    }
 
 
 async def test_below_threshold_is_not_degraded(session, make_download):
@@ -58,7 +63,12 @@ async def test_failures_outside_the_window_do_not_count(session, make_download):
     for _ in range(DEGRADED_THRESHOLD + 2):
         await _make_error(session, make_download, error="HTTP Error 403: Forbidden", age=old)
     status = await compute_service_status(session)
-    assert status == {"degraded": False, "detected_since": None, "recent_failures": 0}
+    assert status == {
+        "degraded": False,
+        "detected_since": None,
+        "recent_failures": 0,
+        "canary": {"ok": None, "checked_at": None, "kind": None},
+    }
 
 
 async def test_non_transient_error_text_does_not_count(session, make_download):

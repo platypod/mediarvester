@@ -311,6 +311,21 @@ The Queue's finished cards show the same button (`JellyfinLink.vue`) via `media_
 - `GET /api/settings/cookies` — returns `{ has_cookies, uploaded_at }` for the current user.
 - `GET /api/settings/me` — returns `{ user }` so the frontend can display who is logged in.
 
+### YouTube health (`services/ytdlp_options.py`, `ytdlp_errors.py`, `canary.py`, `cookies_health.py`)
+
+- **No `player_client` is ever pinned** in the base options -- yt-dlp's own default client set
+  is the one to trust, and yt-dlp is bumped daily by `.github/workflows/ytdlp-update.yml`
+  (exact pins in `requirements.txt`). See `docs/incidents/2026-11-21-pinned-player-client.md`.
+- `ytdlp_errors.classify()` turns yt-dlp error text into an action-level `ErrorKind`
+  (embed-blocked, 403, formats missing, rate-limited, auth required, not yet live, permanent).
+- The canary probes a known-good video on a schedule through the same options real downloads
+  use, stopping after the first couple of MB. A failing anonymous probe marks the service
+  degraded on its own (banner + `mediarvester.service.degraded`), and sets
+  `mediarvester.canary.healthy` / `mediarvester.canary.cookies_healthy`.
+- `GET /api/settings/cookies` reports `logged_in` (same test as yt-dlp: `LOGIN_INFO` + a
+  SAPISID cookie) and the owner's latest canary check, including rotation during it. yt-dlp
+  rewrites the cookies file after each run, so `logged_in` can change without an upload.
+
 ### Poller (`services/poller.py`)
 
 - On startup, register one APScheduler job per enabled Source.
@@ -344,6 +359,9 @@ In production, FastAPI serves the built `frontend/dist/` as static files under `
 | `YT_DLP_USERNAME` | _(empty)_ | Optional account username |
 | `YT_DLP_PASSWORD` | _(empty)_ | Optional account password |
 | `LOG_LEVEL` | `INFO` | Python logging level |
+| `CANARY_INTERVAL_MINUTES` | `180` | How often `services/canary.py` probes a real YouTube download (anonymously and per cookies owner); `0` disables it |
+| `CANARY_URLS` | Big Buck Bunny (`aqz-KE-bpKQ`) | Comma-separated known-good videos the canary probes |
+| `CANARY_PROBE_BYTES` | `2097152` | Stop a probe once this much of the stream has arrived |
 | `UVICORN_HOST` | `0.0.0.0` | |
 | `UVICORN_PORT` | `8080` | |
 | `OTEL_SERVICE_NAME` | `mediarvester` | Standard OTel env var — see `services/telemetry.py` |

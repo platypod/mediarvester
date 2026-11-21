@@ -72,6 +72,18 @@ async function submit() {
   }
 }
 
+// services/ytdlp_errors.py ErrorKind values.
+const CANARY_REASONS: Record<string, string> = {
+  forbidden: 'the video stream was refused with HTTP 403',
+  formats_missing: 'no downloadable formats were offered',
+  rate_limited: 'YouTube is rate-limiting this server',
+  embed_blocked: 'the video refused the embedded player',
+}
+
+function canaryReason(kind: string | null): string {
+  return (kind && CANARY_REASONS[kind]) || 'an unexpected error'
+}
+
 function formatSince(iso: string): string {
   return new Date(iso + 'Z').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
@@ -94,10 +106,18 @@ onUnmounted(() => {
       class="bg-yellow-900/40 border border-yellow-700/50 rounded-lg px-4 py-3 text-sm text-yellow-200"
     >
       <strong>Downloads may be degraded.</strong>
-      {{ settings.serviceStatus.recent_failures }} recent failure(s) look like a site-side issue
-      (rate limiting or a blocked format), not a problem with a specific video —
-      first noticed around {{ formatSince(settings.serviceStatus.detected_since!) }}.
-      This is usually temporary; try again later, or delete and re-add the failed download.
+      <template v-if="settings.serviceStatus.canary.ok === false">
+        The automatic test download of a known-good video failed
+        ({{ canaryReason(settings.serviceStatus.canary.kind) }}) at
+        {{ formatSince(settings.serviceStatus.canary.checked_at!) }} — YouTube has likely changed
+        something, and a yt-dlp update usually follows within days.
+      </template>
+      <template v-if="settings.serviceStatus.recent_failures >= 3">
+        {{ settings.serviceStatus.recent_failures }} recent failure(s) look like a site-side issue
+        (rate limiting or a blocked format), not a problem with a specific video —
+        first noticed around {{ formatSince(settings.serviceStatus.detected_since!) }}.
+      </template>
+      This is usually temporary; failed downloads retry on their own.
     </div>
 
     <div>

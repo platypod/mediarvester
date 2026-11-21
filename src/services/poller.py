@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import yt_dlp
@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from yt_dlp.utils import RejectedVideoReached
 
 import services.downloader as downloader_module
+from services import canary
 from db import Download, MediaItem, Source, async_session
 from services import playlists
 from services.downloader import (
@@ -582,6 +583,15 @@ async def _refresh_gauges() -> None:
         _set_media_items_total_gauge(total)
 
 
+async def _run_canary() -> None:
+    """Blocking yt-dlp work, so off the event loop -- see services/canary.py."""
+    try:
+        await asyncio.to_thread(canary.run_once, downloader_module.COOKIES_ROOT)
+    except Exception:
+        logger.exception("canary run failed")
+    await _refresh_gauges()
+
+
 async def init_scheduler() -> None:
     async with async_session() as session:
         result = await session.execute(select(Source).where(Source.enabled == True))
@@ -600,5 +610,17 @@ async def init_scheduler() -> None:
     # no error, no log, nothing). Running this on an interval closes that
     # gap; it's a cheap no-op query when there's nothing to recover.
     scheduler.add_job(recover_missed_retries, "interval", minutes=5, id="recover_missed_retries")
+    if canary.CANARY_INTERVAL_MINUTES > 0:
+        # First run a few minutes after startup (not at it: a crash-looping
+        # pod must not hammer YouTube), then on the interval.
+        scheduler.add_job(
+            _run_canary,
+            "interval",
+            minutes=canary.CANARY_INTERVAL_MINUTES,
+            id="canary",
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.start()
     logger.info("scheduler started")

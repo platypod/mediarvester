@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useSettingsStore } from '../stores/settings'
 import CookiesDropZone from '../components/CookiesDropZone.vue'
 
 const store = useSettingsStore()
+
+const check = computed(() => (store.cookiesStatus.has_cookies ? store.cookiesStatus.last_check ?? null : null))
+const checkClass = computed(() =>
+  check.value && (!check.value.ok || check.value.logged_in_after === false) ? 'text-yellow-300' : 'text-gray-500',
+)
 
 onMounted(async () => {
   try {
@@ -73,15 +78,31 @@ function formatDate(iso: string | null): string {
       <div class="flex items-center gap-2 text-sm">
         <span
           class="w-2 h-2 rounded-full flex-shrink-0"
-          :class="store.cookiesStatusError ? 'bg-yellow-500' : (store.cookiesStatus.has_cookies ? 'bg-green-500' : 'bg-gray-600')"
+          :class="store.cookiesStatusError || store.cookiesStatus.logged_in === false ? 'bg-yellow-500' : (store.cookiesStatus.has_cookies ? 'bg-green-500' : 'bg-gray-600')"
         />
         <span v-if="store.cookiesStatusError" class="text-yellow-300">
           Cookie status unavailable — {{ store.cookiesStatusError }}
+        </span>
+        <span v-else-if="store.cookiesStatus.has_cookies && store.cookiesStatus.logged_in === false" class="text-yellow-300">
+          Uploaded {{ formatDate(store.cookiesStatus.uploaded_at) }}, but this file is
+          <strong>not a logged-in YouTube session</strong> (no LOGIN_INFO cookie, or it expired or
+          was rotated). Downloads still work for public videos; export fresh cookies while
+          signed in to YouTube for age-restricted or members-only ones.
         </span>
         <span v-else-if="store.cookiesStatus.has_cookies" class="text-gray-300">
           Cookies active — last uploaded {{ formatDate(store.cookiesStatus.uploaded_at) }}
         </span>
         <span v-else class="text-gray-500">No cookies uploaded yet</span>
+      </div>
+
+      <div v-if="!store.cookiesStatusError && check" class="text-xs" :class="checkClass">
+        Last automatic check {{ formatDate(check.checked_at + 'Z') }}:
+        <template v-if="!check.ok">the test download failed with these cookies ({{ check.kind || 'unknown error' }}).</template>
+        <template v-else-if="check.logged_in_after === false">
+          the download worked, but YouTube <strong>rotated these cookies</strong> during it, so they
+          are no longer a login. Export them again from a private window you then close.
+        </template>
+        <template v-else>a test download worked with these cookies.</template>
       </div>
 
       <CookiesDropZone @file="handleFile" />

@@ -2,9 +2,20 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '../api/client'
 
+export interface CookiesCheck {
+  ok: boolean
+  checked_at: string
+  logged_in_after: boolean | null
+  kind: string | null
+}
+
 interface CookiesStatus {
   has_cookies: boolean
   uploaded_at: string | null
+  // Is the file a logged-in YouTube session right now? null without a file.
+  logged_in?: boolean | null
+  // Latest canary probe made with these cookies (null until the first run).
+  last_check?: CookiesCheck | null
 }
 
 interface VersionInfo {
@@ -12,10 +23,17 @@ interface VersionInfo {
   github_url: string
 }
 
+export interface CanaryStatus {
+  ok: boolean | null
+  checked_at: string | null
+  kind: string | null
+}
+
 export interface ServiceStatus {
   degraded: boolean
   detected_since: string | null
   recent_failures: number
+  canary: CanaryStatus
 }
 
 export const useSettingsStore = defineStore('settings', () => {
@@ -28,7 +46,12 @@ export const useSettingsStore = defineStore('settings', () => {
   const uploadError = ref('')
   const version = ref<string>('dev')
   const githubUrl = ref<string>('https://github.com/platypod/mediarvester')
-  const serviceStatus = ref<ServiceStatus>({ degraded: false, detected_since: null, recent_failures: 0 })
+  const serviceStatus = ref<ServiceStatus>({
+    degraded: false,
+    detected_since: null,
+    recent_failures: 0,
+    canary: { ok: null, checked_at: null, kind: null },
+  })
 
   async function fetchMe() {
     const data = await api.get<{ user: string; is_admin: boolean; jellyfin_enabled: boolean }>('/api/settings/me')
