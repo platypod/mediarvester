@@ -11,7 +11,7 @@ apscheduler>=3.10.0
 # the main way downloads fail -- but an unpinned floor meant prod only ever
 # got whatever was newest the day a mediarvester tag happened to be built.
 # yt-dlp-ejs (YouTube's JS challenge solver) is bumped alongside it.
-yt-dlp==2026.10.26
+yt-dlp==2026.11.23
 yt-dlp-ejs==0.8.0
 # PO Token provider plugin -- retrieves tokens from the bgutil-ytdlp-pot-provider
 # sidecar (http://127.0.0.1:4416 by default, no config needed) to satisfy
